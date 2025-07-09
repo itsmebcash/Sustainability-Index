@@ -1,3 +1,370 @@
+// --- Safe localStorage patch for sandboxed frames ---
+(function patchLocalStorage() {
+  try {
+    if (window.self !== window.top) {
+      // In iframe: override localStorage with a dummy object
+      Object.defineProperty(window, "localStorage", {
+        value: {
+          getItem: () => null,
+          setItem: () => {},
+          removeItem: () => {},
+          clear: () => {},
+        },
+        configurable: true,
+      });
+    }
+  } catch (e) {
+    // Ignore if we can't patch (shouldn't throw)
+  }
+})();
+
+// --- E-commerce domain restriction via Supabase ---
+// Replace with your Supabase project URL and anon key
+const supabaseUrl = "https://mvxqwljgphuvdtlnrugu.supabase.co";
+const supabaseKey =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im12eHF3bGpncGh1dmR0bG5ydWd1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTIwNzkzMTEsImV4cCI6MjA2NzY1NTMxMX0.vlMK9ysHzqHpSdaI4LlQcJsF49ZVASeIvWgWbfmwFjA";
+let ecommerceDomains = [];
+
+// Fetch the list of allowed e-commerce domains from Supabase
+async function fetchEcommerceDomains() {
+  try {
+    const response = await fetch(
+      `${supabaseUrl}/rest/v1/ecommerce_domains?enabled=eq.true&select=domain`,
+      {
+        headers: {
+          apikey: supabaseKey,
+          Authorization: `Bearer ${supabaseKey}`,
+        },
+      }
+    );
+    if (!response.ok) throw new Error("Failed to fetch domains");
+    const data = await response.json();
+    ecommerceDomains = data.map((d) => d.domain.toLowerCase());
+  } catch (e) {
+    // fallback to a default list if fetch fails
+    ecommerceDomains = [
+      "amazon.",
+      "ebay.",
+      "aliexpress.",
+      "temu.",
+      "walmart.",
+      "etsy.",
+      "flipkart.",
+      "rakuten.",
+      "bestbuy.",
+      "target.",
+    ];
+  }
+}
+
+// Helper to check if current site is an allowed e-commerce domain
+function isEcommerceSite() {
+  const host = window.location.hostname.toLowerCase();
+  return ecommerceDomains.some((domain) => host.includes(domain));
+}
+// Fetch and summarize web search results for product/brand sustainability
+async function fetchSustainabilityWebSummary(title, brand = "") {
+  // Use only the main product name (first part of title) and brand for the query
+  let mainTitle = title;
+  if (title && title.length > 0) {
+    // Split on common separators and take the first part (most relevant)
+    mainTitle = title.split(/[|,-]/)[0].trim();
+    // If still too long, take first 6 words
+    if (mainTitle.split(" ").length > 6) {
+      mainTitle = mainTitle.split(" ").slice(0, 6).join(" ");
+    }
+  }
+  const query = `${brand} ${mainTitle} sustainability ethical issues`.trim();
+  const endpoint = `https://duckduckgo8.p.rapidapi.com/?q=${encodeURIComponent(
+    query
+  )}`;
+  const rapidApiKey = "5e09ebcf46msh74d86497ba030a4p1105adjsn4f5690631cdd";
+  try {
+    // Use the same headers and method as the provided curl example
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers: {
+        "X-RapidAPI-Host": "duckduckgo8.p.rapidapi.com",
+        "X-RapidAPI-Key": rapidApiKey,
+      },
+    });
+    if (!response.ok) throw new Error("DuckDuckGo API error");
+    const data = await response.json();
+    // Summarize top results (titles + snippets)
+    if (data && data.results && Array.isArray(data.results)) {
+      const summary = data.results
+        .slice(0, 5)
+        .map((r) => `- ${r.title}: ${r.snippet}`)
+        .join("\n");
+      return summary || "No relevant web results found.";
+    }
+    return "No relevant web results found.";
+  } catch (e) {
+    console.error("DuckDuckGo web search error:", e);
+    return "Web search unavailable.";
+  }
+}
+
+// Truncate helper to avoid token limit errors
+function truncate(str, maxLen) {
+  if (!str) return "";
+  return str.length > maxLen ? str.slice(0, maxLen) + "..." : str;
+}
+
+// Analyze product with Groq AI, including web search summary for verification
+// Update these values with the latest Groq API endpoint and model as needed
+async function analyzeWithGroq(title, description, webSummary = "") {
+  // TODO: Replace with your actual Groq API key and endpoint if changed
+  const apiKey = "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"; // <-- Replace with your Groq API key
+  const endpoint = "https://api.groq.com/openai/v1/chat/completions"; // <-- Update if Groq docs specify a new endpoint
+  // Truncate to avoid token limit errors (adjust as needed)
+  const maxDescLen = 1000;
+  const maxWebLen = 1500;
+  const safeDescription = truncate(description, maxDescLen);
+  const safeWebSummary = truncate(webSummary, maxWebLen);
+  // Use a model name that is available to your Groq account (check Groq docs)
+  // Llama-3-70b is more capable of nuanced sustainability scoring than the 8b model
+  const model = "llama3-70b-8192"; // More powerful model for better analysis
+  // Get product-specific sustainability criteria
+  let productTypeGuidelines = "";
+  try {
+    // Import from product_types.js file if available, otherwise use default criteria
+    productTypeGuidelines = getProductTypeSpecificGuidelines(
+      title,
+      safeDescription
+    );
+  } catch (e) {
+    console.warn("Could not get product-specific guidelines:", e);
+    productTypeGuidelines =
+      "Use general sustainability criteria appropriate for this product type.";
+  }
+
+  const prompt = `You are a sustainability expert evaluating a product's environmental impact. Analyze the product details and return a JSON object with the following fields:
+- verifiedScore (0-100, integer, based on all info including web search)
+- score (0-5, integer, based on product info only)
+- manufacturingCountry (if found or can be inferred)
+- co2Emissions (if you can estimate, else null)
+- shippingMethod (guess if possible)
+- explanation (detailed rationale for your score)
+- productType (your assessment of what type of product this is)
+
+Product Title: ${title}
+Description: ${safeDescription}
+
+Web search findings (for verification, ethical issues, brand reputation):
+${safeWebSummary}
+
+PRODUCT-SPECIFIC SUSTAINABILITY CRITERIA:
+${productTypeGuidelines}
+
+SCORING GUIDELINES - Score products according to these sustainability factors:
+
+5/5 (Excellent): 
+- Uses fully sustainable, renewable, or recycled materials
+- Carbon-neutral or negative production
+- Organic, plastic-free, or biodegradable
+- Transparent and ethical supply chain
+- Clear eco certifications (Fairtrade, FSC, GOTS, etc.)
+
+4/5 (Good):
+- Mostly sustainable materials or production methods
+- Some eco-friendly certifications
+- Reduced carbon footprint initiatives
+- Some recycled or renewable content
+- Evidence of ethical manufacturing
+
+3/5 (Average):
+- Some sustainable materials
+- Standard industry practices
+- Limited sustainability information
+- Mixed materials (some sustainable, some not)
+- Neutral environmental impact
+
+2/5 (Below Average):
+- Primarily non-renewable resources
+- Energy-intensive manufacturing
+- Minimal recycled content
+- Limited transparency
+- Some concerning materials (moderate plastic usage)
+
+1/5 (Poor):
+- Harmful materials (excess plastic, toxic chemicals)
+- High carbon footprint
+- No sustainability efforts
+- No transparency
+- Disposable or single-use product
+
+0/5 (Not Assessable):
+- Insufficient information to make assessment
+
+IMPORTANT INSTRUCTIONS:
+- Be critical and realistic - not all products deserve high scores
+- If web search reveals unethical practices or greenwashing, reduce scores accordingly
+- Use the full range of scores (1-5) - don't default to middle values
+- Products with significant plastic content should generally score lower
+- Organic and natural materials should generally score higher
+- Be specific about why you assigned the score
+- Consider both materials AND manufacturing processes in your assessment`;
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a critical sustainability expert specialized in evaluating products based on environmental impact, material sustainability, ethical production, and resource usage. Your assessments are accurate, differentiated, and well-researched. You prioritize factual evidence over marketing claims. Score different product types according to appropriate sustainability standards for their category.",
+          },
+          { role: "user", content: prompt },
+        ],
+        max_tokens: 1024,
+        temperature: 0.1,
+        response_format: { type: "json_object" },
+      }),
+    });
+    if (response.status === 404) {
+      // Graceful fallback: show message in UI and return null
+      console.warn(
+        "Groq API endpoint not found (404). Please check your endpoint or API key."
+      );
+      return null;
+    }
+    if (!response.ok) return null;
+    const data = await response.json();
+    const text = data.choices?.[0]?.message?.content;
+    if (!text) return null;
+    // Handle JSON response (should be direct JSON with response_format parameter)
+    let ai = null;
+
+    try {
+      // First, try direct parsing (assuming we got proper JSON)
+      ai = JSON.parse(text);
+    } catch (err) {
+      console.warn(
+        "Direct JSON parse failed, trying to extract JSON from text"
+      );
+
+      // Fallback: try to extract JSON object from text
+      let match = text.match(/\{[\s\S]*\}/);
+      if (!match) {
+        console.error("No JSON object found in response:", text);
+        return null;
+      }
+
+      try {
+        ai = JSON.parse(match[0]);
+      } catch (err) {
+        // Attempt to fix common JSON issues from LLMs
+        let fixed = match[0]
+          .replace(/([,{\s])(\w+):/g, '$1"$2":') // quote property names
+          .replace(/'/g, '"') // single to double quotes
+          .replace(/,\s*}/g, "}"); // remove trailing commas
+
+        try {
+          ai = JSON.parse(fixed);
+        } catch (err2) {
+          console.error("JSON parsing failed even after fixes:", err2, fixed);
+          return null;
+        }
+      }
+    }
+
+    // Validate the AI response structure
+    if (!ai || typeof ai !== "object") {
+      console.error("Invalid AI response structure:", ai);
+      return null;
+    }
+    // Validate and normalize scores
+    if (ai.score === undefined || ai.score === null) {
+      console.warn("Missing score in AI response, defaulting to 0");
+      ai.score = 0;
+    } else {
+      // Ensure score is an integer between 0-5
+      ai.score = Math.min(5, Math.max(0, Math.round(Number(ai.score))));
+    }
+
+    if (ai.verifiedScore === undefined || ai.verifiedScore === null) {
+      console.warn("Missing verifiedScore in AI response");
+      ai.verifiedScore = null;
+    } else {
+      // Ensure verifiedScore is an integer between 0-100
+      ai.verifiedScore = Math.min(
+        100,
+        Math.max(0, Math.round(Number(ai.verifiedScore)))
+      );
+    }
+
+    // Ensure explanation exists
+    if (!ai.explanation) {
+      ai.explanation = "No detailed explanation available.";
+    }
+
+    // Add icons for badge
+    ai.icons = getRatingIcons(ai.score);
+    ai.webSummary = webSummary;
+
+    // Log the final score for detailed debugging
+    logSustainabilityScoreDebug(
+      title,
+      ai.score,
+      ai.explanation,
+      ai.productType
+    );
+
+    // Debug logger for sustainability scores - helps identify if scores are differentiated
+    function logSustainabilityScoreDebug(
+      title,
+      score,
+      explanation,
+      productType
+    ) {
+      const shortTitle = title?.substring(0, 30) || "Unknown product";
+      const formattedScore = score !== null ? score : "N/A";
+      const shortExplanation =
+        explanation?.substring(0, 100) || "No explanation";
+
+      console.log(
+        `%c Sustainability Score Debug %c ${formattedScore}/5 %c ${shortTitle}`,
+        "background: #2c3e50; color: white; padding: 2px 0;",
+        `background: ${
+          score >= 4
+            ? "#4caf50"
+            : score >= 3
+            ? "#ff9800"
+            : score >= 1
+            ? "#f44336"
+            : "#9e9e9e"
+        }; color: white; padding: 2px 4px;`,
+        "background: #f8f9fa; color: #333; padding: 2px 0;"
+      );
+
+      console.log(
+        `Product Type: ${
+          productType || "Unknown"
+        }\nExplanation: ${shortExplanation}...`
+      );
+    }
+    // Call this debug function after getting AI analysis
+    logSustainabilityScoreDebug(
+      title,
+      ai.score,
+      ai.explanation,
+      ai.productType
+    );
+
+    return ai;
+  } catch (e) {
+    // Show a more user-friendly error in the console
+    console.error("Groq AI error (network or parsing):", e);
+    return null;
+  }
+}
 // Global settings
 let settings = {
   enabled: true,
@@ -40,10 +407,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 // Initialize the extension
-function init() {
+async function init() {
   if (!settings.enabled) return;
-
-  // More dynamic website detection
+  await fetchEcommerceDomains();
+  if (!isEcommerceSite()) return; // Only run on e-commerce sites
   detectProductPage();
 }
 
@@ -173,8 +540,7 @@ function detectProductPage() {
     url.includes("/dp/") ||
     url.includes("/gp/product/") ||
     url.includes("/p/") ||
-    url.includes("/B0") || // Amazon product IDs often start with B0
-    /\/[A-Za-z0-9]{5,}$/.test(url) // Product IDs at the end of URLs
+    url.includes("/B0") // Amazon product IDs often start with B0
   ) {
     isProductPage = true;
   }
@@ -297,30 +663,183 @@ function detectProductPage() {
         document.title ||
         "Product";
 
-      // Extract product description
-      const productDescription =
-        document.querySelector('meta[name="description"]')?.content ||
-        document.querySelector(".product-description")?.textContent ||
-        document.querySelector("#productDescription")?.textContent ||
-        document.querySelector("#feature-bullets")?.textContent ||
-        document.querySelector(".a-expander-content")?.textContent ||
-        "";
+      // Try to extract brand name from common selectors or meta tags
+      let productBrand = "";
+      const brandSelectors = [
+        ".brand",
+        ".product-brand",
+        '[itemprop="brand"]',
+        "[data-brand]",
+        ".a-brand",
+        "#bylineInfo",
+        ".brand-name",
+        ".productMeta-brand",
+        ".product-meta__vendor",
+        ".product-vendor",
+        ".manufacturer",
+        '[data-testid="brand-name"]',
+        '[data-test="brand-name"]',
+      ];
+      for (const selector of brandSelectors) {
+        const el = document.querySelector(selector);
+        if (el && el.textContent.trim().length > 0) {
+          productBrand = el.textContent.trim();
+          break;
+        }
+      }
+      // Fallback: try meta tag
+      if (!productBrand) {
+        const metaBrand = document.querySelector(
+          'meta[name="brand"], meta[property="og:brand"]'
+        );
+        if (metaBrand && metaBrand.content) {
+          productBrand = metaBrand.content.trim();
+        }
+      }
 
-      // Calculate supply chain transparency score
-      const score = calculateSupplyChainScore(
-        productTitle,
-        "",
-        productDescription
-      );
+      // Extract comprehensive product description and details - more thorough product info gathering
+      let productDescription = "";
 
-      // Insert badge
-      insertSupplyChainBadge(priceElement, score);
+      // Try meta description first
+      const metaDesc =
+        document.querySelector('meta[name="description"]')?.content || "";
+      if (metaDesc) productDescription += metaDesc + "\n\n";
+
+      // Common product description selectors - combine them all for better data
+      const descriptionSelectors = [
+        ".product-description",
+        "#productDescription",
+        "#feature-bullets",
+        ".a-expander-content",
+        ".product-overview",
+        ".product-info",
+        "[data-testid='product-description']",
+        ".product__description",
+        ".details-panel",
+        ".product-details-wrapper",
+        ".prod-detail",
+        ".prod-info",
+        ".product-features",
+        "#description",
+        ".description",
+        "#item-description",
+        ".item-description",
+        ".summary",
+        ".specs",
+        ".specifications",
+      ];
+
+      // Extract from all selectors and combine
+      descriptionSelectors.forEach((selector) => {
+        const elements = document.querySelectorAll(selector);
+        if (elements && elements.length > 0) {
+          elements.forEach((element) => {
+            const text = element.textContent.trim();
+            if (text && text.length > 10) {
+              productDescription += text + "\n\n";
+            }
+          });
+        }
+      });
+
+      // If still empty, try to find any paragraph that might contain product info
+      if (!productDescription) {
+        const paragraphs = document.querySelectorAll("p");
+        if (paragraphs && paragraphs.length > 0) {
+          paragraphs.forEach((p) => {
+            const text = p.textContent.trim();
+            if (text && text.length > 40 && text.length < 1000) {
+              productDescription += text + "\n\n";
+            }
+          });
+        }
+      }
+
+      productDescription =
+        productDescription.trim() || "No product description found.";
+
+      // Extract product details (materials, specifications, etc.)
+      const productDetails = extractProductDetails();
+
+      // Extract sustainability claims or eco labels if available
+      const sustainabilityClaims = extractSustainabilityClaims();
+
+      // Construct comprehensive product info
+      const enhancedDescription = `
+PRODUCT DESCRIPTION:
+${productDescription}
+
+PRODUCT DETAILS:
+${productDetails}
+
+SUSTAINABILITY CLAIMS:
+${sustainabilityClaims}
+      `.trim();
+
+      // Fetch web search summary using both brand and title, then analyze with Groq AI
+      fetchSustainabilityWebSummary(productTitle, productBrand)
+        .then((webSummary) =>
+          analyzeWithGroq(productTitle, enhancedDescription, webSummary)
+        )
+        .then((aiScore) => {
+          if (aiScore) {
+            insertSupplyChainBadge(priceElement, aiScore);
+          } else {
+            // fallback: show N/A if AI fails
+            insertSupplyChainBadge(priceElement, {
+              score: null,
+              verifiedScore: null,
+              manufacturingCountry: null,
+              co2Emissions: null,
+              shippingMethod: null,
+              icons: "",
+              explanation: "No sustainability data available.",
+            });
+          }
+        })
+        .catch(() => {
+          // fallback: show N/A if AI fails
+          insertSupplyChainBadge(priceElement, {
+            score: null,
+            verifiedScore: null,
+            manufacturingCountry: null,
+            co2Emissions: null,
+            shippingMethod: null,
+            icons: "",
+            explanation: "No sustainability data available.",
+          });
+        });
     } catch (error) {
       console.error("Error processing product page:", error);
       // Fallback to body if there's an error
       try {
-        const score = calculateSupplyChainScore(document.title, "", "");
-        insertSupplyChainBadge(document.body, score);
+        analyzeWithGroq(document.title, "")
+          .then((aiScore) => {
+            if (aiScore) {
+              insertSupplyChainBadge(document.body, aiScore);
+            } else {
+              insertSupplyChainBadge(document.body, {
+                score: null,
+                verifiedScore: null,
+                manufacturingCountry: null,
+                co2Emissions: null,
+                shippingMethod: null,
+                icons: "",
+                explanation: "No sustainability data available.",
+              });
+            }
+          })
+          .catch(() => {
+            insertSupplyChainBadge(document.body, {
+              score: null,
+              verifiedScore: null,
+              manufacturingCountry: null,
+              co2Emissions: null,
+              shippingMethod: null,
+              icons: "",
+              explanation: "No sustainability data available.",
+            });
+          });
       } catch (fallbackError) {
         console.error("Fallback error:", fallbackError);
       }
@@ -500,183 +1019,18 @@ function calculateCO2Emissions(manufacturingCountry) {
 }
 
 // Update the calculateSupplyChainScore function to better detect eco-friendly products
-function calculateSupplyChainScore(title, brand, description) {
-  // Start with a score of 0 - no transparency by default
-  let score = 0;
-  let co2Emissions = null;
-  let manufacturingCountry = null;
-  let shippingMethod = null;
 
-  // Combine all text for analysis
-  const allText = (title + " " + brand + " " + description).toLowerCase();
-
-  // Check for manufacturing location information
-  const madeInRegex = /made in ([a-zA-Z\s]+)/i;
-  const manufacturedInRegex = /manufactured in ([a-zA-Z\s]+)/i;
-  const producedInRegex = /produced in ([a-zA-Z\s]+)/i;
-  const originRegex = /origin:\s*([a-zA-Z\s]+)/i;
-  const countryOfOriginRegex = /country of origin:\s*([a-zA-Z\s]+)/i;
-
-  // Try to extract manufacturing country
-  const match =
-    allText.match(madeInRegex) ||
-    allText.match(manufacturedInRegex) ||
-    allText.match(producedInRegex) ||
-    allText.match(originRegex) ||
-    allText.match(countryOfOriginRegex);
-
-  if (match && match[1]) {
-    manufacturingCountry = match[1].trim();
-    // Add 2 points for having manufacturing location
-    score += 2;
-
-    // Calculate CO2 emissions
-    co2Emissions = calculateCO2Emissions(manufacturingCountry);
-
-    // Determine likely shipping method based on distance
-    if (distanceToFinland[manufacturingCountry.toLowerCase()] > 5000) {
-      shippingMethod = Math.random() > 0.7 ? "air" : "sea"; // Randomize for demo
-    } else if (distanceToFinland[manufacturingCountry.toLowerCase()] > 1000) {
-      shippingMethod = Math.random() > 0.3 ? "truck" : "rail"; // Randomize for demo
-    } else {
-      shippingMethod = "truck";
-    }
-  }
-
-  // Check for eco-friendly indicators
-  const ecoFriendlyTerms = [
-    "eco friendly",
-    "eco-friendly",
-    "sustainable",
-    "sustainability",
-    "zero waste",
-    "plastic free",
-    "biodegradable",
-    "compostable",
-    "recyclable",
-    "recycled",
-    "organic",
-    "natural",
-    "vegan",
-    "cruelty free",
-    "cruelty-free",
-    "carbon neutral",
-    "carbon offset",
-    "renewable",
-    "reusable",
-    "refillable",
-    "low impact",
-    "environmentally friendly",
-    "green product",
-    "eco conscious",
-    "eco-conscious",
-  ];
-
-  // Add points for eco-friendly terms
-  ecoFriendlyTerms.forEach((term) => {
-    if (allText.includes(term)) score += 0.5;
-  });
-
-  // Check for supply chain transparency indicators
-  const supplyChainTerms = [
-    "supply chain",
-    "transparent supply",
-    "ethical sourcing",
-    "responsibly sourced",
-    "traceable",
-    "traceability",
-    "factory audit",
-    "factory certified",
-    "supplier code of conduct",
-    "fair labor",
-    "fair trade",
-    "direct trade",
-    "blockchain verified",
-    "qr code tracking",
-    "supply chain map",
-    "sourcing map",
-  ];
-
-  // Add points for supply chain transparency terms
-  supplyChainTerms.forEach((term) => {
-    if (allText.includes(term)) score += 0.5;
-  });
-
-  // Check for certifications related to supply chain
-  const certifications = [
-    "iso 9001",
-    "iso 14001",
-    "sa8000",
-    "wrap certified",
-    "bsci",
-    "sedex",
-    "fair trade certified",
-    "rainforest alliance",
-    "gots certified",
-    "oeko-tex",
-    "bluesign",
-    "c-tpat",
-    "ags",
-    "rcs",
-    "grs",
-    "b corp",
-    "b-corp",
-    "fsc certified",
-    "energy star",
-    "cradle to cradle",
-    "ecocert",
-    "usda organic",
-    "eu ecolabel",
-    "nordic swan",
-    "blue angel",
-    "green seal",
-  ];
-
-  // Add points for certifications
-  certifications.forEach((cert) => {
-    if (allText.includes(cert)) score += 0.5;
-  });
-
-  // Check for detailed supply chain information
-  const detailedInfoTerms = [
-    "tier 1 supplier",
-    "tier 2 supplier",
-    "raw material source",
-    "factory name",
-    "factory location",
-    "supplier list",
-    "mill list",
-    "component source",
-    "material source",
-    "ingredient source",
-  ];
-
-  // Add points for detailed supply chain information
-  detailedInfoTerms.forEach((term) => {
-    if (allText.includes(term)) score += 1;
-  });
-
-  // Ensure score is between 0-5
-  score = Math.max(0, Math.min(5, Math.round(score)));
-
-  return {
-    score: score,
-    manufacturingCountry: manufacturingCountry,
-    co2Emissions: co2Emissions,
-    shippingMethod: shippingMethod,
-    icons: getRatingIcons(score),
-  };
-}
+// (Removed) calculateSupplyChainScore: All scoring is now handled by AI in analyzeWithGroq.
 
 // Get rating icons based on score (0-5)
 function getRatingIcons(score) {
   let icons = "";
-  // Green leaf SVG for positive ratings
-  const greenLeaf = `<svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='#4caf50' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' style='vertical-align:middle;'><path d='M2 22s16-4 20-20C6 2 2 22 2 22z'></path></svg>`;
-  // Gray leaf SVG for negative ratings
-  const grayLeaf = `<svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='#bdbdbd' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' style='vertical-align:middle;'><path d='M2 22s16-4 20-20C6 2 2 22 2 22z'></path></svg>`;
+  // Filled green leaf SVG for positive ratings
+  const filledLeaf = `<svg width='18' height='18' viewBox='0 0 24 24' fill='#4caf50' stroke='#388e3c' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round' style='vertical-align:middle;'><path d='M2 22s16-4 20-20C6 2 2 22 2 22z'></path></svg>`;
+  // Light gray filled leaf SVG for negative ratings
+  const grayLeaf = `<svg width='18' height='18' viewBox='0 0 24 24' fill='#e0e0e0' stroke='#bdbdbd' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round' style='vertical-align:middle;'><path d='M2 22s16-4 20-20C6 2 2 22 2 22z'></path></svg>`;
   for (let i = 0; i < score; i++) {
-    icons += greenLeaf;
+    icons += filledLeaf;
   }
   for (let i = score; i < 5; i++) {
     icons += grayLeaf;
@@ -779,15 +1133,18 @@ function insertSupplyChainBadge(priceElement, scoreData) {
   // Determine badge color based on score
   const badgeColor = scoreData.score > 0 ? "#4caf50" : "#e53935"; // Green if > 0, red if 0
 
+  // Badge revision: add title, keep score and leaf in one line, remove label text
   badge.innerHTML = `
-    <div class="supply-chain-badge-content sleek-badge">
-      <div class="supply-chain-badge-title sleek-title">
-        <span>Sustainability Index</span>
-      </div>
-      <div class="supply-chain-badge-rating sleek-rating">
-        <span class="supply-chain-score" style="color: ${badgeColor}; font-size: 1.1em; font-weight: 600;">${scoreData.score}/5</span>
-        <span class="supply-chain-icons" style="margin-left: 4px; font-size: 1em;">${scoreData.icons}</span>
-      </div>
+    <div class="supply-chain-badge-content sleek-badge" style="background: #fff; border-radius: 18px; box-shadow: 0 2px 12px 0 rgba(60,60,60,0.10); padding: 8px 18px 8px 14px; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 120px;">
+      <span class="supply-chain-badge-title" style="font-size: 0.95em; font-weight: 600; color: #222; letter-spacing: 0.01em; margin-bottom: 2px;">Sustainability Score</span>
+      <span style="display: flex; align-items: center; gap: 8px;">
+        <span class="supply-chain-score" style="color: ${badgeColor}; font-size: 1.15em; font-weight: 700;">${
+    scoreData.score !== null ? `${scoreData.score}/5` : "N/A"
+  }</span>
+        <span class="supply-chain-icons" style="font-size: 1.2em; display: flex; align-items: center;">${
+          scoreData.icons
+        }</span>
+      </span>
     </div>
   `;
 
@@ -818,7 +1175,7 @@ function insertSupplyChainBadge(priceElement, scoreData) {
   details.className = "supply-chain-details";
   details.style.display = "none";
 
-  // Generate details
+  // Generate details - use AI explanation if available, otherwise use generated details
   const supplyChainDetails = generateSupplyChainDetails(scoreData.score);
 
   // Get CO2 comparisons for context
@@ -829,24 +1186,181 @@ function insertSupplyChainBadge(priceElement, scoreData) {
   // Determine if emissions are high
   const isHighEmission = scoreData.co2Emissions?.total > 15;
 
-  // Populate details
+  // Limit explanation to 2-3 lines (about 220 characters, break at sentence end if possible)
+  function truncateExplanation(text, maxLen = 220) {
+    if (!text) return "";
+    if (text.length <= maxLen) return text;
+    // Try to break at the end of the last sentence within maxLen
+    const truncated = text.slice(0, maxLen);
+    const lastPeriod = truncated.lastIndexOf(".");
+    if (lastPeriod > 50) return truncated.slice(0, lastPeriod + 1);
+    return truncated + "...";
+  }
+
+  // --- NEW: If no manufacturing origin, try to fetch it using the search API ---
+  if (
+    !scoreData.manufacturingCountry ||
+    scoreData.manufacturingCountry === "Unknown" ||
+    scoreData.manufacturingCountry === null
+  ) {
+    // Try to fetch product brand from the page if not present in scoreData
+    let productBrand = scoreData.productBrand;
+    if (!productBrand) {
+      const brandSelectors = [
+        ".brand",
+        ".product-brand",
+        '[itemprop="brand"]',
+        "[data-brand]",
+        ".a-brand",
+        "#bylineInfo",
+        ".brand-name",
+        ".productMeta-brand",
+        ".product-meta__vendor",
+        ".product-vendor",
+        ".manufacturer",
+        '[data-testid="brand-name"]',
+        '[data-test="brand-name"]',
+      ];
+      for (const selector of brandSelectors) {
+        const el = document.querySelector(selector);
+        if (el && el.textContent.trim().length > 0) {
+          productBrand = el.textContent.trim();
+          break;
+        }
+      }
+      // Fallback: try meta tag
+      if (!productBrand) {
+        const metaBrand = document.querySelector(
+          'meta[name="brand"], meta[property="og:brand"]'
+        );
+        if (metaBrand && metaBrand.content) {
+          productBrand = metaBrand.content.trim();
+        }
+      }
+    }
+    // Use product title from badge or fallback to document title
+    const productTitle =
+      document.querySelector(".supply-chain-badge-title")?.textContent ||
+      document.title;
+    fetchSustainabilityWebSummary(productTitle, productBrand || "").then(
+      (webSummary) => {
+        // Try to extract a likely country from the web summary using a simple regex for country names
+        const countryList = [
+          "China",
+          "India",
+          "Bangladesh",
+          "Vietnam",
+          "USA",
+          "United States",
+          "Germany",
+          "France",
+          "Italy",
+          "Spain",
+          "UK",
+          "United Kingdom",
+          "Japan",
+          "South Korea",
+          "Taiwan",
+          "Malaysia",
+          "Indonesia",
+          "Thailand",
+          "Turkey",
+          "Mexico",
+          "Brazil",
+          "Canada",
+          "Australia",
+          "Sweden",
+          "Finland",
+          "Norway",
+          "Denmark",
+          "Netherlands",
+          "Belgium",
+          "Switzerland",
+          "Austria",
+          "Poland",
+          "Czech Republic",
+          "Hungary",
+          "Romania",
+          "Bulgaria",
+          "Greece",
+          "Portugal",
+          "Ireland",
+          "Singapore",
+          "Hong Kong",
+          "UAE",
+          "Saudi Arabia",
+          "South Africa",
+          "Egypt",
+          "Morocco",
+          "Kenya",
+          "Nigeria",
+          "Ethiopia",
+          "Pakistan",
+          "Sri Lanka",
+          "Cambodia",
+          "Myanmar",
+          "Philippines",
+          "New Zealand",
+        ];
+        let foundCountry = null;
+        for (const country of countryList) {
+          const regex = new RegExp(`\\b${country}\\b`, "i");
+          if (webSummary && regex.test(webSummary)) {
+            foundCountry = country;
+            break;
+          }
+        }
+        if (foundCountry) {
+          // Update the badge and details with the found country
+          scoreData.manufacturingCountry = foundCountry;
+          // Optionally, recalculate CO2 emissions and update the UI
+          scoreData.co2Emissions = calculateCO2Emissions(foundCountry);
+          // Also update the brand for display if it was missing
+          scoreData.productBrand = productBrand;
+          // Re-render the badge and details with the new info
+          // Remove old badge and details
+          const oldBadge = document.getElementById("supply-chain-badge");
+          const oldDetails = document.getElementById("supply-chain-details");
+          if (oldBadge) oldBadge.remove();
+          if (oldDetails) oldDetails.remove();
+          // Insert updated badge
+          insertSupplyChainBadge(priceElement, scoreData);
+        }
+      }
+    );
+  }
+
+  // Populate details (web search findings section removed)
   details.innerHTML = `
     <div class="supply-chain-header">
       <h3>Sustainability Index: <br> <br> <span style="color: ${badgeColor}">${
     scoreData.score
   }/5 ${scoreData.icons}</span></h3>
       <button class="supply-chain-close">×</button>
-    </div>
-    
-    <div class="supply-chain-summary-box">
-      <p class="supply-chain-summary">${supplyChainDetails.summary}</p>
+    </div>      <div class="supply-chain-summary-box">
+      <p class="supply-chain-summary">${truncateExplanation(
+        scoreData.explanation || supplyChainDetails.summary
+      )}</p>
       ${
         isHighEmission
           ? `<div class="warning-banner">⚠️ High carbon footprint detected</div>`
           : ""
       }
+      ${
+        scoreData.score <= 2
+          ? `<div class="warning-banner" style="background-color:#f44336;color:#fff;font-weight:bold;">⚠️ Low sustainability score</div>`
+          : ""
+      }
     </div>
-    
+    <div class="supply-chain-verified-score">
+      <h4 style="font-size:1.2em;font-weight:bold; margin:0;">Web Verified Score${
+        scoreData.productBrand ? ` (${scoreData.productBrand})` : ""
+      }: ${
+    scoreData.verifiedScore !== undefined && scoreData.verifiedScore !== null
+      ? scoreData.verifiedScore + "%"
+      : "N/A"
+  }</h4><br/>
+    </div>
     <div class="supply-chain-metrics">
       <div class="supply-chain-metric">
         <h4>Transparency Level</h4>
@@ -871,7 +1385,6 @@ function insertSupplyChainBadge(priceElement, scoreData) {
         <p class="metric-explanation">${supplyChainDetails.riskExplanation}</p>
       </div>
     </div>
-    
     ${
       scoreData.manufacturingCountry
         ? `
@@ -958,7 +1471,7 @@ function insertSupplyChainBadge(priceElement, scoreData) {
     `
         : `<div class="missing-data-warning">⚠️ No manufacturing origin information available</div>`
     }
-    
+
 <div class="product-sustainability">
   <h4>Product Sustainability</h4>
   <p>Based on available supply chain information:</p>
@@ -1008,12 +1521,12 @@ function insertSupplyChainBadge(priceElement, scoreData) {
   <div class="sustainability-scope">
     <h5>What we analyze:</h5>
     <ul class="scope-list">
-      <li>Raw material sourcing</li>
-      <li>Manufacturing processes</li>
-      <li>Worker conditions</li>
-      <li>Packaging materials</li>
-      <li>Transportation methods</li>
-      <li>End-of-life recyclability</li>
+      <li>Origin information (manufacturing country)</li>
+      <li>Supply chain transparency</li>
+      <li>Certifications</li>
+      <li>Material sourcing</li>
+      <li>Environmental practices</li>
+      <li>Packaging and end-of-life options</li>
     </ul>
   </div>
 </div>
@@ -1144,121 +1657,9 @@ function insertSupplyChainBadge(priceElement, scoreData) {
   }</p>
 </div>
 
-<div class="labor-practices">
-  <h4>Labor Practices</h4>
-  <div class="labor-metrics">
-    <div class="labor-metric">
-      <h5>Worker Conditions</h5>
-      <div class="metric-value ${
-        scoreData.score >= 3 ? "good" : scoreData.score >= 1 ? "medium" : "poor"
-      }">
-        ${
-          scoreData.score >= 4
-            ? "Excellent"
-            : scoreData.score >= 3
-            ? "Good"
-            : scoreData.score >= 2
-            ? "Fair"
-            : scoreData.score >= 1
-            ? "Concerning"
-            : "Unknown"
-        }
-      </div>
-      <p>${
-        scoreData.score >= 3
-          ? "Fair working conditions likely"
-          : scoreData.score >= 1
-          ? "Some concerns about working conditions"
-          : "Unknown working conditions"
-      }</p>
-    </div>
-    <div class="labor-metric">
-      <h5>Fair Wages</h5>
-      <div class="metric-value ${
-        scoreData.score >= 3 ? "good" : scoreData.score >= 1 ? "medium" : "poor"
-      }">
-        ${
-          scoreData.score >= 4
-            ? "Living wage"
-            : scoreData.score >= 3
-            ? "Fair wage"
-            : scoreData.score >= 2
-            ? "Minimum wage"
-            : scoreData.score >= 1
-            ? "Below minimum"
-            : "Unknown"
-        }
-      </div>
-      <p>${
-        scoreData.score >= 3
-          ? "Workers likely paid fairly"
-          : scoreData.score >= 1
-          ? "Wage information limited"
-          : "Unknown wage practices"
-      }</p>
-    </div>
-    <div class="labor-metric">
-      <h5>Certifications</h5>
-      <div class="metric-value ${
-        scoreData.score >= 3 ? "good" : scoreData.score >= 1 ? "medium" : "poor"
-      }">
-        ${
-          scoreData.score >= 4
-            ? "Multiple"
-            : scoreData.score >= 3
-            ? "Some"
-            : scoreData.score >= 2
-            ? "Limited"
-            : scoreData.score >= 1
-            ? "None"
-            : "Unknown"
-        }
-      </div>
-      <p>${
-        scoreData.score >= 3
-          ? "Has labor practice certifications"
-          : scoreData.score >= 1
-          ? "Limited labor certifications"
-          : "No known labor certifications"
-      }</p>
-    </div>
-  </div>
-</div>
 
-<div class="green-delivery-options">
-  <h4>Green Delivery Options</h4>
-  <p>Choose a more sustainable shipping method:</p>
-  <div class="delivery-options">
-    <div class="delivery-option eco-friendly">
-      <h5>Eco-Friendly Delivery</h5>
-      <div class="delivery-time">7-10 days</div>
-      <div class="delivery-impact">
-        <span class="impact-label">Environmental Impact:</span>
-        <span class="impact-value low">Low <span class="green-ticks">✅✅✅</span></span>
-      </div>
-      <p>Consolidated shipping using optimized routes and renewable energy vehicles</p>
-    </div>
-    <div class="delivery-option balanced">
-      <h5>Balanced Delivery</h5>
-      <div class="delivery-time">3-5 days</div>
-      <div class="delivery-impact">
-        <span class="impact-label">Environmental Impact:</span>
-        <span class="impact-value medium">Medium <span class="green-ticks">✅✅</span></span>
-      </div>
-      <p>Partially optimized shipping with some carbon offset</p>
-    </div>
-    <div class="delivery-option express">
-      <h5>Express Delivery</h5>
-      <div class="delivery-time">1-2 days</div>
-      <div class="delivery-impact">
-        <span class="impact-label">Environmental Impact:</span>
-        <span class="impact-value high">High <span class="green-ticks">✅</span></span>
-      </div>
-      <p>Fastest shipping with carbon offset option available</p>
-    </div>
-  </div>
-  <p class="delivery-note">Choosing slower delivery reduces carbon emissions by allowing for more efficient transportation planning.</p>
-</div>
+
+
 
 ${
   scoreData.score <= 3
@@ -1294,34 +1695,34 @@ ${
 
 <div class="supply-chain-methodology">
   <h4>How This Rating Is Calculated</h4>
-  <p>Our index evaluates products based on available information:</p>
+  <p>Our index evaluates products based on the most reliably extractable information from product pages and web search. Each factor contributes points to a maximum score of 5:</p>
   <div class="methodology-factors">
     <div class="methodology-factor">
-      <h5>Origin Information</h5>
-      <p>Where the product was manufactured and how far it traveled</p>
+      <h5>Origin Information <span style="color:#888;font-weight:normal;">(+2 points)</span></h5>
+      <p>Manufacturing country and estimated shipping distance</p>
     </div>
     <div class="methodology-factor">
-      <h5>Supply Chain Transparency</h5>
-      <p>Visibility into all stages of production and distribution</p>
+      <h5>Supply Chain Transparency <span style="color:#888;font-weight:normal;">(+1 point)</span></h5>
+      <p>Presence of traceability, supplier info, or transparency keywords</p>
     </div>
     <div class="methodology-factor">
-      <h5>Certifications</h5>
-      <p>Third-party verified sustainability and ethical practices</p>
+      <h5>Certifications <span style="color:#888;font-weight:normal;">(+2 points)</span></h5>
+      <p>Explicit mentions of third-party sustainability certifications</p>
     </div>
     <div class="methodology-factor">
-      <h5>Material Sourcing</h5>
-      <p>How and where raw materials were obtained</p>
+      <h5>Material Sourcing <span style="color:#888;font-weight:normal;">(+1 point)</span></h5>
+      <p>Use of sustainable, recycled, or organic materials</p>
     </div>
     <div class="methodology-factor">
-      <h5>Labor Conditions</h5>
-      <p>Working conditions and fair wages throughout production</p>
+      <h5>Environmental Practices <span style="color:#888;font-weight:normal;">(+1 point)</span></h5>
+      <p>Claims of carbon neutrality, water saving, zero waste, etc.</p>
     </div>
     <div class="methodology-factor">
-      <h5>Environmental Practices</h5>
-      <p>Energy, water, and waste management in production</p>
+      <h5>Web Verification <span style="color:#888;font-weight:normal;">(-2 to +1 points)</span></h5>
+      <p>Positive or negative signals from web search (e.g. awards, controversies)</p>
     </div>
   </div>
-  <p class="methodology-note">A score of 0 indicates no supply chain information is available, while 5 represents exceptional transparency and sustainability.</p>
+  <p class="methodology-note">A score of 0 indicates no supply chain information is available, while 5 represents exceptional transparency and sustainability based on available data.</p>
 </div>
 
     
@@ -1460,6 +1861,94 @@ ${
     }
   });
 }
+
+// Safe localStorage wrapper to handle sandboxed environments
+let localStorageUsable = true;
+try {
+  const testKey = "__safestorage_test__";
+  window.localStorage.setItem(testKey, "1");
+  window.localStorage.removeItem(testKey);
+} catch (e) {
+  localStorageUsable = false;
+}
+
+const safeStorage = {
+  data: {}, // In-memory fallback
+
+  getItem: function (key) {
+    if (localStorageUsable) {
+      try {
+        return localStorage.getItem(key);
+      } catch (e) {
+        localStorageUsable = false;
+      }
+    }
+    return this.data[key] || null;
+  },
+
+  setItem: function (key, value) {
+    if (localStorageUsable) {
+      try {
+        localStorage.setItem(key, value);
+        return;
+      } catch (e) {
+        localStorageUsable = false;
+      }
+    }
+    this.data[key] = value;
+  },
+
+  removeItem: function (key) {
+    if (localStorageUsable) {
+      try {
+        localStorage.removeItem(key);
+        return;
+      } catch (e) {
+        localStorageUsable = false;
+      }
+    }
+    delete this.data[key];
+  },
+
+  clear: function () {
+    if (localStorageUsable) {
+      try {
+        localStorage.clear();
+        return;
+      } catch (e) {
+        localStorageUsable = false;
+      }
+    }
+    this.data = {};
+  },
+};
+
+// Override global window.localStorage in content script (doesn't affect the page itself)
+try {
+  Object.defineProperty(window, "localStorageWrapper", {
+    value: safeStorage,
+    writable: false,
+  });
+} catch (e) {
+  console.warn("Could not define localStorage wrapper:", e);
+}
+
+// Patch any potential localStorage references in this script
+function patchLocalStorageReferences() {
+  try {
+    // This won't affect page scripts, only our extension content script
+    if (typeof localStorage !== "undefined") {
+      // We don't actually replace localStorage as that would be problematic
+      // But this will help if we ever directly reference it in our code
+      console.log("localStorage is available, no need to patch");
+    }
+  } catch (e) {
+    console.warn("localStorage patching failed:", e);
+  }
+}
+
+// Call the patch function immediately
+patchLocalStorageReferences();
 
 // Helper function to get color based on score
 function getColorForScore(score) {
@@ -1778,74 +2267,6 @@ styleSheet.textContent = `
 
 /* Delivery Options */
 .delivery-option {
-  position: relative;
-}
-
-.delivery-option.eco-friendly {
-  background-color: #e8f5e9;
-  border: 1px solid #a5d6a7;
-}
-
-.delivery-option.balanced {
-  background-color: #fff8e1;
-  border: 1px solid #ffe082;
-}
-
-.delivery-option.express {
-  background-color: #ffebee;
-  border: 1px solid #ef9a9a;
-}
-
-.delivery-time {
-  font-weight: 600;
-  margin-bottom: 8px;
-}
-
-.delivery-impact {
-  margin: 8px 0;
-  font-size: 13px;
-}
-
-.impact-label {
-  display: block;
-  margin-bottom: 4px;
-}
-
-.impact-value {
-  font-weight: 600;
-}
-
-.impact-value.low {
-  color: #2e7d32;
-}
-
-.impact-value.medium {
-  color: #ff8f00;
-}
-
-.impact-value.high {
-  color: #c62828;
-}
-
-.green-ticks {
-  margin-left: 4px;
-}
-
-/* Supply Chain Options */
-.supply-chain-delivery-options {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid #e0e0e0;
-  width: 100%;
-}
-
-.delivery-options-title {
-  font-weight: 600;
-  font-size: 13px;
-  margin-bottom: 6px;
-}
-
-.delivery-options-list {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1908,7 +2329,205 @@ body {
   padding: 0 12px;
 }
 
+/* New styles for product details and sustainability claims */
+.product-details, .sustainability-claims {
+  margin-top: 12px;
+  padding: 12px;
+  background-color: #f9f9f9;
+  border-radius: 6px;
+  overflow-wrap: break-word;
+}
 
+.product-details h4, .sustainability-claims h4 {
+  margin-bottom: 10px;
+  color: #2e7d32;
+  font-weight: 600;
+}
 
+.product-details p, .sustainability-claims p {
+  margin: 4px 0;
+  line-height: 1.4;
+}
+
+.sustainability-claims ul {
+  padding-left: 20px;
+  margin: 4px 0;
+}
+
+.sustainability-claims li {
+  margin-bottom: 4px;
+  position: relative;
+  padding-left: 10px;
+}
+
+.sustainability-claims li:before {
+  content: "✔️";
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: #4caf50;
+  font-size: 1.1em;
+  line-height: 1;
+}
 `;
 document.head.appendChild(styleSheet);
+
+// Function to extract detailed product information from the page
+function extractProductDetails() {
+  // Common selectors for product details across e-commerce sites
+  const detailsSelectors = [
+    // Amazon selectors
+    "#detailBullets_feature_div",
+    "#productDetails_feature_div",
+    "#technicalSpecifications_feature_div",
+    "#feature-bullets",
+    ".product-facts",
+    "table.a-keyvalue",
+    // Generic selectors
+    ".product-specs",
+    ".product-details",
+    ".product-information",
+    ".specifications",
+    "[class*='specification']",
+    "[class*='detail']",
+    "[id*='specification']",
+    "[id*='detail']",
+  ];
+
+  // Material keywords to specifically look for
+  const materialKeywords = [
+    "material",
+    "fabric",
+    "composition",
+    "made of",
+    "made from",
+    "ingredients",
+    "components",
+    "cotton",
+    "polyester",
+    "plastic",
+    "wood",
+    "metal",
+    "glass",
+    "recycled",
+    "organic",
+    "synthetic",
+  ];
+
+  let details = "";
+
+  // Try to find product details sections
+  for (const selector of detailsSelectors) {
+    const elements = document.querySelectorAll(selector);
+    if (elements && elements.length > 0) {
+      for (const element of elements) {
+        details += element.textContent.trim() + "\n\n";
+      }
+    }
+  }
+
+  // Look for material information specifically
+  let materialInfo = "";
+  const allElements = document.querySelectorAll("*");
+  for (const element of allElements) {
+    if (!element.textContent) continue;
+
+    const text = element.textContent.toLowerCase();
+    for (const keyword of materialKeywords) {
+      if (
+        text.includes(keyword) &&
+        text.length < 300 &&
+        !materialInfo.includes(text)
+      ) {
+        materialInfo += element.textContent.trim() + "\n";
+        break;
+      }
+    }
+  }
+
+  if (materialInfo) {
+    details += "\nMATERIAL INFORMATION:\n" + materialInfo;
+  }
+
+  return details.trim() || "No detailed product specifications found.";
+}
+
+// Function to extract sustainability claims and eco certifications
+function extractSustainabilityClaims() {
+  // Sustainability-related keywords to look for
+  const sustainabilityKeywords = [
+    "sustainable",
+    "eco",
+    "green",
+    "environment",
+    "friendly",
+    "recycled",
+    "organic",
+    "natural",
+    "biodegradable",
+    "compostable",
+    "fair trade",
+    "fairtrade",
+    "ethical",
+    "responsible",
+    "renewable",
+    "carbon",
+    "footprint",
+    "offset",
+    "neutral",
+    "negative",
+    "certification",
+    "certified",
+    "eco-friendly",
+    "FSC",
+    "GOTS",
+    "sustainably sourced",
+    "cruelty-free",
+    "vegan",
+    "plant-based",
+    "zero waste",
+    "plastic-free",
+    "water saving",
+    "energy efficient",
+  ];
+
+  let claims = "";
+  const allElements = document.querySelectorAll("*");
+
+  for (const element of allElements) {
+    if (!element.textContent) continue;
+
+    const text = element.textContent.toLowerCase();
+    for (const keyword of sustainabilityKeywords) {
+      if (
+        text.includes(keyword) &&
+        text.length < 500 &&
+        !claims.includes(text)
+      ) {
+        // Check if this looks like a claim rather than just containing the word
+        if (text.length > 10) {
+          claims += "• " + element.textContent.trim() + "\n";
+          break;
+        }
+      }
+    }
+  }
+
+  // Look for eco certification images
+  const imgElements = document.querySelectorAll("img");
+  for (const img of imgElements) {
+    const imgSrc = img.src?.toLowerCase() || "";
+    const imgAlt = img.alt?.toLowerCase() || "";
+    const hasEcoCert = sustainabilityKeywords.some(
+      (keyword) => imgSrc.includes(keyword) || imgAlt.includes(keyword)
+    );
+
+    if (hasEcoCert) {
+      claims += `• Image with possible eco certification: ${
+        imgAlt || "Unnamed certification"
+      }\n`;
+    }
+  }
+
+  return claims.trim() || "No explicit sustainability claims found.";
+}
