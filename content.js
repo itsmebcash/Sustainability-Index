@@ -1,0 +1,1914 @@
+// Global settings
+let settings = {
+  enabled: true,
+  alternatives: true,
+  detailed: true,
+};
+
+// Declare chrome variable if it's not already defined
+if (typeof chrome === "undefined") {
+  var chrome = chrome || {};
+  chrome.runtime = chrome.runtime || {};
+  chrome.runtime.sendMessage =
+    chrome.runtime.sendMessage ||
+    (() => {
+      console.warn(
+        "chrome.runtime.sendMessage is not available in this context."
+      );
+    });
+}
+
+// Load settings
+chrome.storage.sync.get(
+  {
+    enabled: true,
+    alternatives: true,
+    detailed: true,
+  },
+  (items) => {
+    settings = items;
+    init();
+  }
+);
+
+// Listen for settings updates
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === "updateSettings") {
+    settings = request.settings;
+    updateUI();
+  }
+});
+
+// Initialize the extension
+function init() {
+  if (!settings.enabled) return;
+
+  // More dynamic website detection
+  detectProductPage();
+}
+
+// Update UI based on settings changes
+function updateUI() {
+  const badge = document.getElementById("supply-chain-badge");
+  const details = document.getElementById("supply-chain-details");
+
+  if (!settings.enabled && badge) {
+    badge.style.display = "none";
+    if (details) details.style.display = "none";
+    return;
+  }
+
+  if (badge) badge.style.display = "flex";
+
+  if (details) {
+    const alternatives = details.querySelector(".supply-chain-alternatives");
+    if (alternatives) {
+      alternatives.style.display = settings.alternatives ? "block" : "none";
+    }
+
+    const report = details.querySelector(".supply-chain-report");
+    if (report) {
+      report.style.display = settings.detailed ? "block" : "none";
+    }
+  }
+}
+
+// Update the detectProductPage function to better handle Amazon product pages
+function detectProductPage() {
+  // More comprehensive selectors for product pages
+  const priceSelectors = [
+    // Common price selectors
+    ".price",
+    ".a-price",
+    ".a-price-whole",
+    ".a-price-fraction",
+    '[data-testid="price-wrap"]',
+    '[data-test="product-price"]',
+    ".product-price",
+    ".price-current",
+    ".current-price",
+    ".product__price",
+    ".product-meta__price",
+    ".money",
+    // Amazon specific
+    "#priceblock_ourprice",
+    "#price_inside_buybox",
+    "#corePrice_feature_div",
+    ".priceToPay",
+    // Temu specific
+    ".price-tag",
+    ".price-tag-text",
+    ".price-tag-num",
+    // Generic price patterns
+    'span:contains("$")',
+    'div:contains("$")',
+    // Currency symbols for different regions
+    'span:contains("€")',
+    'span:contains("£")',
+    'span:contains("¥")',
+  ];
+
+  // Product title selectors
+  const titleSelectors = [
+    "h1.product-title",
+    "#productTitle",
+    ".product-name",
+    '[data-test="product-title"]',
+    ".product__title",
+    ".product-single__title",
+    ".product-meta__title",
+    // Amazon specific
+    "#title",
+    ".product-title-word-break",
+    // Generic - any h1 is likely a product title on a product page
+    "h1",
+  ];
+
+  // Add to cart button selectors
+  const cartButtonSelectors = [
+    ".add-to-cart",
+    "#add-to-cart-button",
+    ".btn-add-to-cart",
+    '[data-action="add-to-cart"]',
+    '[data-testid="add-to-cart"]',
+    'button:contains("Add to Cart")',
+    'button:contains("Add to Bag")',
+    'button:contains("Buy Now")',
+    'button:contains("Purchase")',
+    // Amazon specific
+    "#add-to-cart-button",
+    "#buy-now-button",
+    // Temu specific
+    ".add-to-cart-btn",
+    ".buy-now-btn",
+  ];
+
+  // Product image selectors
+  const imageSelectors = [
+    ".product-image",
+    ".product__image",
+    ".product-single__photo",
+    "#product-image",
+    ".product-gallery__image",
+    // Amazon specific
+    "#landingImage",
+    "#imgTagWrapperId img",
+    ".imgTagWrapper img",
+    // Temu specific
+    ".product-image-container",
+    ".product-image-wrapper",
+  ];
+
+  // Check for product page indicators
+  let isProductPage = false;
+  let priceElement = null;
+  let titleElement = null;
+
+  // First check URL patterns common for product pages
+  const url = window.location.href;
+  if (
+    url.includes("/product/") ||
+    url.includes("/products/") ||
+    url.includes("/item/") ||
+    url.includes("/dp/") ||
+    url.includes("/gp/product/") ||
+    url.includes("/p/") ||
+    url.includes("/B0") || // Amazon product IDs often start with B0
+    /\/[A-Za-z0-9]{5,}$/.test(url) // Product IDs at the end of URLs
+  ) {
+    isProductPage = true;
+  }
+
+  // Then check for price elements
+  for (const selector of priceSelectors) {
+    try {
+      const elements = document.querySelectorAll(selector);
+      if (elements.length > 0) {
+        // Use the first visible price element
+        for (const element of elements) {
+          if (
+            isElementVisible(element) &&
+            element.textContent.trim().match(/[$€£¥]/)
+          ) {
+            priceElement = element;
+            isProductPage = true;
+            break;
+          }
+        }
+        if (priceElement) break;
+      }
+    } catch (e) {
+      // Ignore errors from invalid selectors
+      console.debug("Error with selector:", selector, e);
+    }
+  }
+
+  // Check for title elements
+  for (const selector of titleSelectors) {
+    try {
+      const element = document.querySelector(selector);
+      if (element && isElementVisible(element)) {
+        titleElement = element;
+        isProductPage = true;
+        break;
+      }
+    } catch (e) {
+      console.debug("Error with selector:", selector, e);
+    }
+  }
+
+  // Check for add to cart buttons as a strong indicator
+  for (const selector of cartButtonSelectors) {
+    try {
+      const element = document.querySelector(selector);
+      if (element && isElementVisible(element)) {
+        isProductPage = true;
+        break;
+      }
+    } catch (e) {
+      console.debug("Error with selector:", selector, e);
+    }
+  }
+
+  // Check for product images
+  for (const selector of imageSelectors) {
+    try {
+      const element = document.querySelector(selector);
+      if (element && isElementVisible(element)) {
+        isProductPage = true;
+        break;
+      }
+    } catch (e) {
+      console.debug("Error with selector:", selector, e);
+    }
+  }
+
+  // Amazon-specific checks
+  if (window.location.hostname.includes("amazon")) {
+    // Check for Amazon product page specific elements
+    if (
+      document.querySelector("#productTitle, #title, .product-title-word-break")
+    ) {
+      isProductPage = true;
+    }
+
+    // If we're on Amazon and it's a product page, make sure we have a price element
+    if (isProductPage && !priceElement) {
+      priceElement = document.querySelector(
+        ".a-price, #priceblock_ourprice, #price_inside_buybox, .priceToPay"
+      );
+    }
+
+    // If we're on Amazon and it's a product page, make sure we have a title element
+    if (isProductPage && !titleElement) {
+      titleElement = document.querySelector(
+        "#productTitle, #title, .product-title-word-break"
+      );
+    }
+  }
+
+  // If we've determined this is a product page, proceed
+  if (isProductPage) {
+    try {
+      // If we don't have a price element yet, try to find any element with a price pattern
+      if (!priceElement) {
+        const priceRegex = /\$\d+(\.\d{2})?/;
+        const allElements = document.querySelectorAll("*");
+        for (const element of allElements) {
+          if (
+            element.textContent &&
+            priceRegex.test(element.textContent) &&
+            isElementVisible(element)
+          ) {
+            priceElement = element;
+            break;
+          }
+        }
+      }
+
+      // If we still don't have a price element, use the title element or body as fallback
+      if (!priceElement) {
+        priceElement = titleElement || document.body;
+      }
+
+      // Extract product title
+      const productTitle =
+        (titleElement ? titleElement.textContent.trim() : "") ||
+        document.title ||
+        "Product";
+
+      // Extract product description
+      const productDescription =
+        document.querySelector('meta[name="description"]')?.content ||
+        document.querySelector(".product-description")?.textContent ||
+        document.querySelector("#productDescription")?.textContent ||
+        document.querySelector("#feature-bullets")?.textContent ||
+        document.querySelector(".a-expander-content")?.textContent ||
+        "";
+
+      // Calculate supply chain transparency score
+      const score = calculateSupplyChainScore(
+        productTitle,
+        "",
+        productDescription
+      );
+
+      // Insert badge
+      insertSupplyChainBadge(priceElement, score);
+    } catch (error) {
+      console.error("Error processing product page:", error);
+      // Fallback to body if there's an error
+      try {
+        const score = calculateSupplyChainScore(document.title, "", "");
+        insertSupplyChainBadge(document.body, score);
+      } catch (fallbackError) {
+        console.error("Fallback error:", fallbackError);
+      }
+    }
+  }
+}
+
+function isElementVisible(element) {
+  if (!element) return false;
+
+  const style = window.getComputedStyle(element);
+  if (
+    style.display === "none" ||
+    style.visibility === "hidden" ||
+    style.opacity === "0"
+  ) {
+    return false;
+  }
+
+  const rect = element.getBoundingClientRect();
+  // Check if element has size and is in viewport
+  return (
+    rect.width > 0 &&
+    rect.height > 0 &&
+    rect.top < window.innerHeight &&
+    rect.bottom > 0 &&
+    rect.left < window.innerWidth &&
+    rect.right > 0
+  );
+}
+
+// Country CO2 emission factors (simplified for demonstration)
+const countryEmissionFactors = {
+  china: 0.8,
+  india: 0.7,
+  bangladesh: 0.6,
+  vietnam: 0.65,
+  usa: 0.5,
+  germany: 0.4,
+  france: 0.3,
+  italy: 0.35,
+  spain: 0.4,
+  uk: 0.45,
+  japan: 0.5,
+  "south korea": 0.55,
+  taiwan: 0.6,
+  malaysia: 0.65,
+  indonesia: 0.7,
+  thailand: 0.65,
+  turkey: 0.55,
+  mexico: 0.6,
+  brazil: 0.55,
+  canada: 0.5,
+  australia: 0.6,
+  sweden: 0.25,
+  finland: 0.3,
+  norway: 0.2,
+  denmark: 0.3,
+  netherlands: 0.4,
+  belgium: 0.45,
+  switzerland: 0.3,
+  austria: 0.35,
+  poland: 0.6,
+  "czech republic": 0.55,
+  hungary: 0.5,
+  romania: 0.6,
+  bulgaria: 0.65,
+  greece: 0.5,
+  portugal: 0.45,
+  ireland: 0.4,
+  singapore: 0.5,
+  "hong kong": 0.55,
+  uae: 0.7,
+  "saudi arabia": 0.75,
+  "south africa": 0.7,
+  egypt: 0.65,
+  morocco: 0.6,
+  kenya: 0.55,
+  nigeria: 0.7,
+  ethiopia: 0.5,
+  pakistan: 0.65,
+  "sri lanka": 0.6,
+  cambodia: 0.65,
+  myanmar: 0.7,
+  philippines: 0.6,
+  "new zealand": 0.4,
+};
+
+// Approximate distances to Finland from major manufacturing countries (in km)
+const distanceToFinland = {
+  china: 7000,
+  india: 6000,
+  bangladesh: 6500,
+  vietnam: 8000,
+  usa: 7500,
+  germany: 1500,
+  france: 2000,
+  italy: 2500,
+  spain: 3000,
+  uk: 1800,
+  japan: 8500,
+  "south korea": 7800,
+  taiwan: 8200,
+  malaysia: 9000,
+  indonesia: 10000,
+  thailand: 8500,
+  turkey: 3000,
+  mexico: 9500,
+  brazil: 10500,
+  canada: 6500,
+  australia: 15000,
+  sweden: 400,
+  finland: 0,
+  norway: 800,
+  denmark: 1000,
+  netherlands: 1600,
+  belgium: 1800,
+  switzerland: 2200,
+  austria: 1800,
+  poland: 1000,
+  "czech republic": 1500,
+  hungary: 1800,
+  romania: 2000,
+  bulgaria: 2300,
+  greece: 2800,
+  portugal: 3500,
+  ireland: 2200,
+  singapore: 9500,
+  "hong kong": 8000,
+  uae: 5000,
+  "saudi arabia": 4800,
+  "south africa": 9500,
+  egypt: 4000,
+  morocco: 4500,
+  kenya: 7000,
+  nigeria: 6500,
+  ethiopia: 6000,
+  pakistan: 5500,
+  "sri lanka": 7500,
+  cambodia: 8300,
+  myanmar: 7800,
+  philippines: 9000,
+  "new zealand": 17000,
+};
+
+// Calculate CO2 emissions based on manufacturing country and shipping to Finland
+function calculateCO2Emissions(manufacturingCountry) {
+  // Default values if country not found
+  let emissionFactor = 0.6; // Average emission factor
+  let distance = 5000; // Average distance
+
+  // Normalize country name
+  const normalizedCountry = manufacturingCountry.toLowerCase();
+
+  // Look up emission factor and distance
+  if (countryEmissionFactors[normalizedCountry]) {
+    emissionFactor = countryEmissionFactors[normalizedCountry];
+  }
+
+  if (distanceToFinland[normalizedCountry]) {
+    distance = distanceToFinland[normalizedCountry];
+  }
+
+  // Simple calculation: manufacturing emissions + shipping emissions
+  // Manufacturing: emission factor * base value
+  // Shipping: distance * shipping emission factor
+  const manufacturingEmissions = emissionFactor * 10; // Base manufacturing CO2 of 10kg
+  const shippingEmissionFactor = 0.0002; // kg CO2 per km (simplified)
+  const shippingEmissions = distance * shippingEmissionFactor;
+
+  return {
+    total: Math.round((manufacturingEmissions + shippingEmissions) * 10) / 10,
+    manufacturing: Math.round(manufacturingEmissions * 10) / 10,
+    shipping: Math.round(shippingEmissions * 10) / 10,
+    distance: distance,
+  };
+}
+
+// Update the calculateSupplyChainScore function to better detect eco-friendly products
+function calculateSupplyChainScore(title, brand, description) {
+  // Start with a score of 0 - no transparency by default
+  let score = 0;
+  let co2Emissions = null;
+  let manufacturingCountry = null;
+  let shippingMethod = null;
+
+  // Combine all text for analysis
+  const allText = (title + " " + brand + " " + description).toLowerCase();
+
+  // Check for manufacturing location information
+  const madeInRegex = /made in ([a-zA-Z\s]+)/i;
+  const manufacturedInRegex = /manufactured in ([a-zA-Z\s]+)/i;
+  const producedInRegex = /produced in ([a-zA-Z\s]+)/i;
+  const originRegex = /origin:\s*([a-zA-Z\s]+)/i;
+  const countryOfOriginRegex = /country of origin:\s*([a-zA-Z\s]+)/i;
+
+  // Try to extract manufacturing country
+  const match =
+    allText.match(madeInRegex) ||
+    allText.match(manufacturedInRegex) ||
+    allText.match(producedInRegex) ||
+    allText.match(originRegex) ||
+    allText.match(countryOfOriginRegex);
+
+  if (match && match[1]) {
+    manufacturingCountry = match[1].trim();
+    // Add 2 points for having manufacturing location
+    score += 2;
+
+    // Calculate CO2 emissions
+    co2Emissions = calculateCO2Emissions(manufacturingCountry);
+
+    // Determine likely shipping method based on distance
+    if (distanceToFinland[manufacturingCountry.toLowerCase()] > 5000) {
+      shippingMethod = Math.random() > 0.7 ? "air" : "sea"; // Randomize for demo
+    } else if (distanceToFinland[manufacturingCountry.toLowerCase()] > 1000) {
+      shippingMethod = Math.random() > 0.3 ? "truck" : "rail"; // Randomize for demo
+    } else {
+      shippingMethod = "truck";
+    }
+  }
+
+  // Check for eco-friendly indicators
+  const ecoFriendlyTerms = [
+    "eco friendly",
+    "eco-friendly",
+    "sustainable",
+    "sustainability",
+    "zero waste",
+    "plastic free",
+    "biodegradable",
+    "compostable",
+    "recyclable",
+    "recycled",
+    "organic",
+    "natural",
+    "vegan",
+    "cruelty free",
+    "cruelty-free",
+    "carbon neutral",
+    "carbon offset",
+    "renewable",
+    "reusable",
+    "refillable",
+    "low impact",
+    "environmentally friendly",
+    "green product",
+    "eco conscious",
+    "eco-conscious",
+  ];
+
+  // Add points for eco-friendly terms
+  ecoFriendlyTerms.forEach((term) => {
+    if (allText.includes(term)) score += 0.5;
+  });
+
+  // Check for supply chain transparency indicators
+  const supplyChainTerms = [
+    "supply chain",
+    "transparent supply",
+    "ethical sourcing",
+    "responsibly sourced",
+    "traceable",
+    "traceability",
+    "factory audit",
+    "factory certified",
+    "supplier code of conduct",
+    "fair labor",
+    "fair trade",
+    "direct trade",
+    "blockchain verified",
+    "qr code tracking",
+    "supply chain map",
+    "sourcing map",
+  ];
+
+  // Add points for supply chain transparency terms
+  supplyChainTerms.forEach((term) => {
+    if (allText.includes(term)) score += 0.5;
+  });
+
+  // Check for certifications related to supply chain
+  const certifications = [
+    "iso 9001",
+    "iso 14001",
+    "sa8000",
+    "wrap certified",
+    "bsci",
+    "sedex",
+    "fair trade certified",
+    "rainforest alliance",
+    "gots certified",
+    "oeko-tex",
+    "bluesign",
+    "c-tpat",
+    "ags",
+    "rcs",
+    "grs",
+    "b corp",
+    "b-corp",
+    "fsc certified",
+    "energy star",
+    "cradle to cradle",
+    "ecocert",
+    "usda organic",
+    "eu ecolabel",
+    "nordic swan",
+    "blue angel",
+    "green seal",
+  ];
+
+  // Add points for certifications
+  certifications.forEach((cert) => {
+    if (allText.includes(cert)) score += 0.5;
+  });
+
+  // Check for detailed supply chain information
+  const detailedInfoTerms = [
+    "tier 1 supplier",
+    "tier 2 supplier",
+    "raw material source",
+    "factory name",
+    "factory location",
+    "supplier list",
+    "mill list",
+    "component source",
+    "material source",
+    "ingredient source",
+  ];
+
+  // Add points for detailed supply chain information
+  detailedInfoTerms.forEach((term) => {
+    if (allText.includes(term)) score += 1;
+  });
+
+  // Ensure score is between 0-5
+  score = Math.max(0, Math.min(5, Math.round(score)));
+
+  return {
+    score: score,
+    manufacturingCountry: manufacturingCountry,
+    co2Emissions: co2Emissions,
+    shippingMethod: shippingMethod,
+    icons: getRatingIcons(score),
+  };
+}
+
+// Get rating icons based on score (0-5)
+function getRatingIcons(score) {
+  let icons = "";
+  // Green leaf SVG for positive ratings
+  const greenLeaf = `<svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='#4caf50' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' style='vertical-align:middle;'><path d='M2 22s16-4 20-20C6 2 2 22 2 22z'></path></svg>`;
+  // Gray leaf SVG for negative ratings
+  const grayLeaf = `<svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='#bdbdbd' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' style='vertical-align:middle;'><path d='M2 22s16-4 20-20C6 2 2 22 2 22z'></path></svg>`;
+  for (let i = 0; i < score; i++) {
+    icons += greenLeaf;
+  }
+  for (let i = score; i < 5; i++) {
+    icons += grayLeaf;
+  }
+  return icons;
+}
+
+// Generate detailed explanation of score
+function generateSupplyChainDetails(score) {
+  const details = {
+    summary: "",
+    transparency: "Low",
+    transparencyExplanation:
+      "Limited information available about how this product was made and sourced.",
+    riskLevel: "High",
+    riskExplanation:
+      "Higher chance of unsustainable practices in manufacturing and shipping.",
+    recommendations: [],
+  };
+
+  // Generate summary based on score
+  if (score >= 4) {
+    details.summary =
+      "Great transparency! Clear information about manufacturing and sourcing.";
+    details.transparency = "High";
+    details.transparencyExplanation =
+      "Detailed information available about materials, manufacturing, and supply chain.";
+    details.riskLevel = "Low";
+    details.riskExplanation =
+      "Lower chance of hidden environmental or social issues.";
+    details.recommendations = [
+      "Verify claims through third-party sources",
+      "Check for certification updates",
+    ];
+  } else if (score >= 3) {
+    details.summary =
+      "Good transparency. Basic information about origins and manufacturing.";
+    details.transparency = "Good";
+    details.transparencyExplanation =
+      "Some information available, but could be more detailed.";
+    details.riskLevel = "Medium-Low";
+    details.riskExplanation =
+      "Some potential for hidden issues, but generally trustworthy.";
+    details.recommendations = [
+      "Ask for supplier details",
+      "Look for certifications",
+    ];
+  } else if (score >= 2) {
+    details.summary =
+      "Average transparency. Basic manufacturing info, limited details.";
+    details.transparency = "Medium";
+    details.transparencyExplanation =
+      "Only basic information provided, many details missing.";
+    details.riskLevel = "Medium";
+    details.riskExplanation =
+      "Moderate chance of unsustainable practices not being disclosed.";
+    details.recommendations = [
+      "Request material sourcing information",
+      "Consider more transparent alternatives",
+    ];
+  } else if (score >= 1) {
+    details.summary =
+      "Below average transparency. Limited information about production.";
+    details.transparency = "Low";
+    details.transparencyExplanation =
+      "Very little information about how or where this was made.";
+    details.riskLevel = "Medium-High";
+    details.riskExplanation =
+      "Higher chance of unsustainable or unethical practices.";
+    details.recommendations = [
+      "Contact seller for manufacturing details",
+      "Look for more transparent options",
+    ];
+  } else {
+    details.summary =
+      "Poor transparency. No information about origins or production.";
+    details.transparency = "None";
+    details.transparencyExplanation =
+      "No information provided about how or where this was made.";
+    details.riskLevel = "High";
+    details.riskExplanation =
+      "Unable to assess sustainability due to lack of information.";
+    details.recommendations = [
+      "Avoid products with no supply chain information",
+      "Choose brands that share production details",
+    ];
+  }
+
+  return details;
+}
+
+// Insert supply chain badge next to price
+function insertSupplyChainBadge(priceElement, scoreData) {
+  // Create badge element
+  const badge = document.createElement("div");
+  badge.id = "supply-chain-badge";
+  badge.className = "supply-chain-badge";
+  badge.style.display = settings.enabled ? "flex" : "none";
+
+  // Determine badge color based on score
+  const badgeColor = scoreData.score > 0 ? "#4caf50" : "#e53935"; // Green if > 0, red if 0
+
+  badge.innerHTML = `
+    <div class="supply-chain-badge-content sleek-badge">
+      <div class="supply-chain-badge-title sleek-title">
+        <span>Sustainability Index</span>
+      </div>
+      <div class="supply-chain-badge-rating sleek-rating">
+        <span class="supply-chain-score" style="color: ${badgeColor}; font-size: 1.1em; font-weight: 600;">${scoreData.score}/5</span>
+        <span class="supply-chain-icons" style="margin-left: 4px; font-size: 1em;">${scoreData.icons}</span>
+      </div>
+    </div>
+  `;
+
+  // Try to insert badge after price element
+  try {
+    if (priceElement.parentNode) {
+      priceElement.parentNode.insertBefore(badge, priceElement.nextSibling);
+    } else {
+      // Fallback: Create a fixed position badge if we can't insert it normally
+      badge.style.position = "fixed";
+      badge.style.top = "10px";
+      badge.style.right = "10px";
+      badge.style.zIndex = "9999";
+      document.body.appendChild(badge);
+    }
+  } catch (e) {
+    // Fallback: Create a fixed position badge
+    badge.style.position = "fixed";
+    badge.style.top = "10px";
+    badge.style.right = "10px";
+    badge.style.zIndex = "9999";
+    document.body.appendChild(badge);
+  }
+
+  // Create details popup
+  const details = document.createElement("div");
+  details.id = "supply-chain-details";
+  details.className = "supply-chain-details";
+  details.style.display = "none";
+
+  // Generate details
+  const supplyChainDetails = generateSupplyChainDetails(scoreData.score);
+
+  // Get CO2 comparisons for context
+  const co2Comparisons = getEmissionComparisons(
+    scoreData.co2Emissions?.total || 0
+  );
+
+  // Determine if emissions are high
+  const isHighEmission = scoreData.co2Emissions?.total > 15;
+
+  // Populate details
+  details.innerHTML = `
+    <div class="supply-chain-header">
+      <h3>Sustainability Index: <br> <br> <span style="color: ${badgeColor}">${
+    scoreData.score
+  }/5 ${scoreData.icons}</span></h3>
+      <button class="supply-chain-close">×</button>
+    </div>
+    
+    <div class="supply-chain-summary-box">
+      <p class="supply-chain-summary">${supplyChainDetails.summary}</p>
+      ${
+        isHighEmission
+          ? `<div class="warning-banner">⚠️ High carbon footprint detected</div>`
+          : ""
+      }
+    </div>
+    
+    <div class="supply-chain-metrics">
+      <div class="supply-chain-metric">
+        <h4>Transparency Level</h4>
+        <div class="metric-bar-container">
+          <div class="metric-bar" style="width: ${
+            scoreData.score * 20
+          }%; background-color: ${getColorForScore(scoreData.score)}"></div>
+        </div>
+        <p class="metric-value">${supplyChainDetails.transparency}</p>
+        <p class="metric-explanation">${
+          supplyChainDetails.transparencyExplanation
+        }</p>
+      </div>
+      <div class="supply-chain-metric">
+        <h4>Supply Chain Risk</h4>
+        <div class="metric-bar-container">
+          <div class="metric-bar" style="width: ${
+            (5 - scoreData.score) * 20
+          }%; background-color: ${getColorForRisk(5 - scoreData.score)}"></div>
+        </div>
+        <p class="metric-value">${supplyChainDetails.riskLevel}</p>
+        <p class="metric-explanation">${supplyChainDetails.riskExplanation}</p>
+      </div>
+    </div>
+    
+    ${
+      scoreData.manufacturingCountry
+        ? `
+      <div class="supply-chain-origin">
+        <h4>Manufacturing Origin</h4>
+        <p style="font-weight: bold; text-transform: uppercase;">${
+          scoreData.manufacturingCountry
+        }</p>
+        <p class="origin-explanation">Manufacturing location affects carbon emissions, labor practices, and resource use.</p>
+        ${
+          scoreData.co2Emissions
+            ? `
+          <div class="co2-emissions">
+            <h5>Estimated CO2 Emissions (to Finland)</h5>
+            <div class="emissions-visual">
+              <div class="emissions-bar" style="width: ${Math.min(
+                scoreData.co2Emissions.total * 3,
+                100
+              )}%"></div>
+              <span class="emissions-value">${
+                scoreData.co2Emissions.total
+              } kg CO2</span>
+            </div>
+            <div class="emissions-comparison">
+              <p>This is equivalent to:</p>
+              <ul>
+                <li>${co2Comparisons.drivingDistance} km of driving</li>
+                <li>${
+                  co2Comparisons.phoneCycles
+                } smartphone charging cycles</li>
+                <li>${co2Comparisons.meatMeals} beef meals</li>
+              </ul>
+            </div>
+            <div class="emissions-breakdown">
+              <div class="emissions-item">
+                <span>Manufacturing:</span>
+                <span>${scoreData.co2Emissions.manufacturing} kg</span>
+              </div>
+              <div class="emissions-item">
+                <span>Shipping (${scoreData.co2Emissions.distance} km):</span>
+                <span>${scoreData.co2Emissions.shipping} kg</span>
+              </div>
+              <div class="emissions-item shipping-method">
+                <span>Shipping method:</span>
+                <span>${
+                  scoreData.shippingMethod || "Unknown"
+                } ${getShippingIcon(scoreData.shippingMethod)}</span>
+              </div>
+            </div>
+            <div class="shipping-impact">
+              <h6>How shipping choices impact emissions:</h6>
+              <div class="shipping-options">
+                <div class="shipping-option ${
+                  scoreData.shippingMethod === "air" ? "active" : ""
+                }">
+                  <span>✈️ Air</span>
+                  <span class="impact high">High impact</span>
+                </div>
+                <div class="shipping-option ${
+                  scoreData.shippingMethod === "sea" ? "active" : ""
+                }">
+                  <span>🚢 Sea</span>
+                  <span class="impact medium">Medium impact</span>
+                </div>
+                <div class="shipping-option ${
+                  scoreData.shippingMethod === "truck" ? "active" : ""
+                }">
+                  <span>🚚 Truck</span>
+                  <span class="impact medium-high">Medium-high impact</span>
+                </div>
+                <div class="shipping-option ${
+                  scoreData.shippingMethod === "rail" ? "active" : ""
+                }">
+                  <span>🚂 Rail</span>
+                  <span class="impact low">Low impact</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        `
+            : `<div class="missing-data-warning">⚠️ No CO2 emissions data available</div>`
+        }
+      </div>
+    `
+        : `<div class="missing-data-warning">⚠️ No manufacturing origin information available</div>`
+    }
+    
+<div class="product-sustainability">
+  <h4>Product Sustainability</h4>
+  <p>Based on available supply chain information:</p>
+  <div class="sustainability-aspects">
+    <div class="sustainability-aspect">
+      <h5>Materials</h5>
+      <div class="aspect-rating ${
+        scoreData.score >= 3 ? "good" : scoreData.score >= 1 ? "medium" : "poor"
+      }">
+        ${scoreData.score >= 3 ? "✅" : scoreData.score >= 1 ? "⚠️" : "❓"}
+      </div>
+      <p>${
+        scoreData.score >= 3
+          ? "Likely sustainable materials"
+          : scoreData.score >= 1
+          ? "Mixed sustainability"
+          : "Unknown material sustainability"
+      }</p>
+    </div>
+    <div class="sustainability-aspect">
+      <h5>Production</h5>
+      <div class="aspect-rating ${
+        scoreData.score >= 3 ? "good" : scoreData.score >= 1 ? "medium" : "poor"
+      }">
+        ${scoreData.score >= 3 ? "✅" : scoreData.score >= 1 ? "⚠️" : "❓"}
+      </div>
+      <p>${
+        scoreData.score >= 3
+          ? "Likely ethical production"
+          : scoreData.score >= 1
+          ? "Some production transparency"
+          : "Unknown production conditions"
+      }</p>
+    </div>
+    <div class="sustainability-aspect">
+      <h5>Packaging</h5>
+      <div class="aspect-rating ${scoreData.score >= 3 ? "good" : "poor"}">
+        ${scoreData.score >= 3 ? "✅" : "❓"}
+      </div>
+      <p>${
+        scoreData.score >= 3
+          ? "Likely sustainable packaging"
+          : "Unknown packaging sustainability"
+      }</p>
+    </div>
+  </div>
+  <div class="sustainability-scope">
+    <h5>What we analyze:</h5>
+    <ul class="scope-list">
+      <li>Raw material sourcing</li>
+      <li>Manufacturing processes</li>
+      <li>Worker conditions</li>
+      <li>Packaging materials</li>
+      <li>Transportation methods</li>
+      <li>End-of-life recyclability</li>
+    </ul>
+  </div>
+</div>
+
+<div class="environmental-impact">
+  <h4>Environmental Impact</h4>
+  <p>Based on available information about this product:</p>
+  <div class="impact-metrics">
+    <div class="impact-metric">
+      <h5>Carbon Footprint</h5>
+      <div class="metric-value ${
+        scoreData.score >= 3 ? "good" : scoreData.score >= 1 ? "medium" : "poor"
+      }">
+        ${
+          scoreData.score >= 4
+            ? "Low"
+            : scoreData.score >= 3
+            ? "Medium-Low"
+            : scoreData.score >= 2
+            ? "Medium"
+            : scoreData.score >= 1
+            ? "Medium-High"
+            : "High/Unknown"
+        }
+      </div>
+      <p>${
+        scoreData.score >= 3
+          ? "Lower than average emissions"
+          : scoreData.score >= 1
+          ? "Average emissions"
+          : "Higher than average or unknown emissions"
+      }</p>
+    </div>
+    <div class="impact-metric">
+      <h5>Water Usage</h5>
+      <div class="metric-value ${
+        scoreData.score >= 3 ? "good" : scoreData.score >= 1 ? "medium" : "poor"
+      }">
+        ${
+          scoreData.score >= 4
+            ? "Low"
+            : scoreData.score >= 3
+            ? "Medium-Low"
+            : scoreData.score >= 2
+            ? "Medium"
+            : scoreData.score >= 1
+            ? "Medium-High"
+            : "High/Unknown"
+        }
+      </div>
+      <p>${
+        scoreData.score >= 3
+          ? "Water-efficient production"
+          : scoreData.score >= 1
+          ? "Standard water usage"
+          : "High water usage or unknown"
+      }</p>
+    </div>
+    <div class="impact-metric">
+      <h5>Chemical Usage</h5>
+      <div class="metric-value ${
+        scoreData.score >= 3 ? "good" : scoreData.score >= 1 ? "medium" : "poor"
+      }">
+        ${
+          scoreData.score >= 4
+            ? "Minimal"
+            : scoreData.score >= 3
+            ? "Reduced"
+            : scoreData.score >= 2
+            ? "Standard"
+            : scoreData.score >= 1
+            ? "High"
+            : "Unknown"
+        }
+      </div>
+      <p>${
+        scoreData.score >= 3
+          ? "Minimal harmful chemicals"
+          : scoreData.score >= 1
+          ? "Some chemical usage"
+          : "Heavy chemical usage or unknown"
+      }</p>
+    </div>
+  </div>
+</div>
+
+<div class="end-of-life">
+  <h4>End of Life</h4>
+  <div class="eol-options">
+    <div class="eol-option ${
+      scoreData.score >= 3 ? "available" : "unavailable"
+    }">
+      <h5>Recyclability</h5>
+      <div class="eol-icon">${scoreData.score >= 3 ? "♻️" : "❌"}</div>
+      <p>${
+        scoreData.score >= 3
+          ? "Recyclable materials"
+          : "Limited recyclability or unknown"
+      }</p>
+    </div>
+    <div class="eol-option ${
+      scoreData.score >= 4 ? "available" : "unavailable"
+    }">
+      <h5>Biodegradability</h5>
+      <div class="eol-icon">${scoreData.score >= 4 ? "🌱" : "❌"}</div>
+      <p>${
+        scoreData.score >= 4
+          ? "Biodegradable materials"
+          : "Non-biodegradable or unknown"
+      }</p>
+    </div>
+    <div class="eol-option ${
+      scoreData.score >= 3 ? "available" : "unavailable"
+    }">
+      <h5>Take-back Program</h5>
+      <div class="eol-icon">${scoreData.score >= 3 ? "🔄" : "❌"}</div>
+      <p>${
+        scoreData.score >= 3
+          ? "Manufacturer offers take-back"
+          : "No take-back program or unknown"
+      }</p>
+    </div>
+  </div>
+  <p class="eol-note">${
+    scoreData.score >= 3
+      ? "This product has good end-of-life options"
+      : "Limited information about end-of-life options for this product"
+  }</p>
+</div>
+
+<div class="labor-practices">
+  <h4>Labor Practices</h4>
+  <div class="labor-metrics">
+    <div class="labor-metric">
+      <h5>Worker Conditions</h5>
+      <div class="metric-value ${
+        scoreData.score >= 3 ? "good" : scoreData.score >= 1 ? "medium" : "poor"
+      }">
+        ${
+          scoreData.score >= 4
+            ? "Excellent"
+            : scoreData.score >= 3
+            ? "Good"
+            : scoreData.score >= 2
+            ? "Fair"
+            : scoreData.score >= 1
+            ? "Concerning"
+            : "Unknown"
+        }
+      </div>
+      <p>${
+        scoreData.score >= 3
+          ? "Fair working conditions likely"
+          : scoreData.score >= 1
+          ? "Some concerns about working conditions"
+          : "Unknown working conditions"
+      }</p>
+    </div>
+    <div class="labor-metric">
+      <h5>Fair Wages</h5>
+      <div class="metric-value ${
+        scoreData.score >= 3 ? "good" : scoreData.score >= 1 ? "medium" : "poor"
+      }">
+        ${
+          scoreData.score >= 4
+            ? "Living wage"
+            : scoreData.score >= 3
+            ? "Fair wage"
+            : scoreData.score >= 2
+            ? "Minimum wage"
+            : scoreData.score >= 1
+            ? "Below minimum"
+            : "Unknown"
+        }
+      </div>
+      <p>${
+        scoreData.score >= 3
+          ? "Workers likely paid fairly"
+          : scoreData.score >= 1
+          ? "Wage information limited"
+          : "Unknown wage practices"
+      }</p>
+    </div>
+    <div class="labor-metric">
+      <h5>Certifications</h5>
+      <div class="metric-value ${
+        scoreData.score >= 3 ? "good" : scoreData.score >= 1 ? "medium" : "poor"
+      }">
+        ${
+          scoreData.score >= 4
+            ? "Multiple"
+            : scoreData.score >= 3
+            ? "Some"
+            : scoreData.score >= 2
+            ? "Limited"
+            : scoreData.score >= 1
+            ? "None"
+            : "Unknown"
+        }
+      </div>
+      <p>${
+        scoreData.score >= 3
+          ? "Has labor practice certifications"
+          : scoreData.score >= 1
+          ? "Limited labor certifications"
+          : "No known labor certifications"
+      }</p>
+    </div>
+  </div>
+</div>
+
+<div class="green-delivery-options">
+  <h4>Green Delivery Options</h4>
+  <p>Choose a more sustainable shipping method:</p>
+  <div class="delivery-options">
+    <div class="delivery-option eco-friendly">
+      <h5>Eco-Friendly Delivery</h5>
+      <div class="delivery-time">7-10 days</div>
+      <div class="delivery-impact">
+        <span class="impact-label">Environmental Impact:</span>
+        <span class="impact-value low">Low <span class="green-ticks">✅✅✅</span></span>
+      </div>
+      <p>Consolidated shipping using optimized routes and renewable energy vehicles</p>
+    </div>
+    <div class="delivery-option balanced">
+      <h5>Balanced Delivery</h5>
+      <div class="delivery-time">3-5 days</div>
+      <div class="delivery-impact">
+        <span class="impact-label">Environmental Impact:</span>
+        <span class="impact-value medium">Medium <span class="green-ticks">✅✅</span></span>
+      </div>
+      <p>Partially optimized shipping with some carbon offset</p>
+    </div>
+    <div class="delivery-option express">
+      <h5>Express Delivery</h5>
+      <div class="delivery-time">1-2 days</div>
+      <div class="delivery-impact">
+        <span class="impact-label">Environmental Impact:</span>
+        <span class="impact-value high">High <span class="green-ticks">✅</span></span>
+      </div>
+      <p>Fastest shipping with carbon offset option available</p>
+    </div>
+  </div>
+  <p class="delivery-note">Choosing slower delivery reduces carbon emissions by allowing for more efficient transportation planning.</p>
+</div>
+
+${
+  scoreData.score <= 3
+    ? `
+  <div class="donate-tree-section">
+    <h4>Offset Environmental Impact</h4>
+    <p>This product has a lower sustainability rating. Consider offsetting its impact:</p>
+    
+    <div class="offset-options">
+      <div class="offset-option">
+        <button class="donate-tree-button">Plant a Tree ($1-3)</button>
+        <div class="offset-details">
+          <p>Trees planted through OneTreePlanted in sustainable reforestation projects</p>
+          <p>Takes ~10 years to fully offset this product's emissions</p>
+          <p>Planted on dedicated reforestation land, not agricultural land</p>
+        </div>
+      </div>
+      
+      <div class="offset-alternatives">
+        <h5>Alternative Ways to Offset:</h5>
+        <ul>
+          <li>Bike instead of drive for 3 days</li>
+          <li>Reduce meat consumption by 1 meal</li>
+          <li>Lower home heating by 1°C for a week</li>
+          <li>Use cold water for laundry for 5 loads</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  `
+    : ""
+}
+
+<div class="supply-chain-methodology">
+  <h4>How This Rating Is Calculated</h4>
+  <p>Our index evaluates products based on available information:</p>
+  <div class="methodology-factors">
+    <div class="methodology-factor">
+      <h5>Origin Information</h5>
+      <p>Where the product was manufactured and how far it traveled</p>
+    </div>
+    <div class="methodology-factor">
+      <h5>Supply Chain Transparency</h5>
+      <p>Visibility into all stages of production and distribution</p>
+    </div>
+    <div class="methodology-factor">
+      <h5>Certifications</h5>
+      <p>Third-party verified sustainability and ethical practices</p>
+    </div>
+    <div class="methodology-factor">
+      <h5>Material Sourcing</h5>
+      <p>How and where raw materials were obtained</p>
+    </div>
+    <div class="methodology-factor">
+      <h5>Labor Conditions</h5>
+      <p>Working conditions and fair wages throughout production</p>
+    </div>
+    <div class="methodology-factor">
+      <h5>Environmental Practices</h5>
+      <p>Energy, water, and waste management in production</p>
+    </div>
+  </div>
+  <p class="methodology-note">A score of 0 indicates no supply chain information is available, while 5 represents exceptional transparency and sustainability.</p>
+</div>
+
+    
+    <div class="supply-chain-recommendations">
+      <h4>What You Can Do</h4>
+      <ul>
+        ${supplyChainDetails.recommendations
+          .map((rec) => `<li>${rec}</li>`)
+          .join("")}
+      </ul>
+      <div class="request-info">
+        <p>Want more information? Contact the seller directly or check the manufacturer's website.</p>
+      </div>
+    </div>
+    
+    
+    
+    <div class="user-feedback">
+      <h4>Your Feedback</h4>
+      <p>Did this information change your perception of this product?</p>
+      <div class="feedback-buttons">
+        <button class="feedback-button" data-value="yes">Yes</button>
+        <button class="feedback-button" data-value="no">No</button>
+      </div>
+      <div class="feedback-form" style="display: none;">
+        <p>Why?</p>
+        <textarea class="feedback-reason" placeholder="Please share your thoughts..."></textarea>
+        <button class="submit-feedback">Submit</button>
+      </div>
+      <div class="feedback-thanks" style="display: none;">
+        <p>Thank you for your feedback!</p>
+      </div>
+    </div>
+
+    <button class="supply-chain-report-issue" style="margin-bottom: 16px;">Report incorrect information</button>
+
+  `;
+
+  // Add details to page
+  document.body.appendChild(details);
+
+  // Add event listeners for delivery option radio buttons
+  const deliveryOptions = badge.querySelectorAll(
+    'input[name="delivery-option"]'
+  );
+  deliveryOptions.forEach((option) => {
+    option.addEventListener("change", function () {
+      // Update selected option styling
+      const labels = badge.querySelectorAll(".delivery-option-item");
+      labels.forEach((label) => {
+        label.classList.remove("selected");
+      });
+      this.closest(".delivery-option-item").classList.add("selected");
+
+      // Here you would typically update the delivery option in the cart or send to backend
+      console.log(`Selected delivery option: ${this.value}`);
+    });
+  });
+
+  // Add event listeners
+  badge.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    details.style.display = "block";
+
+    // Position the details popup near the badge
+    const badgeRect = badge.getBoundingClientRect();
+    details.style.top = window.scrollY + badgeRect.bottom + 10 + "px";
+    details.style.left = window.scrollX + badgeRect.left + "px";
+  });
+
+  details.querySelector(".supply-chain-close").addEventListener("click", () => {
+    details.style.display = "none";
+  });
+
+  details
+    .querySelector(".supply-chain-report-issue")
+    .addEventListener("click", () => {
+      // Ensure chrome is defined
+      if (typeof chrome !== "undefined" && chrome.runtime) {
+        chrome.runtime.sendMessage({
+          action: "reportIssue",
+          url: window.location.href,
+        });
+      } else {
+        console.error("Chrome runtime is not available.");
+      }
+    });
+
+  // Add donate tree button event listener if it exists
+  const donateButton = details.querySelector(".donate-tree-button");
+  if (donateButton) {
+    donateButton.addEventListener("click", () => {
+      // Open donation page in a new tab
+      window.open("https://onetreeplanted.org/products/plant-trees", "_blank");
+    });
+  }
+
+  // Add feedback button event listeners
+  const feedbackButtons = details.querySelectorAll(".feedback-button");
+  feedbackButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      details.querySelector(".feedback-form").style.display = "block";
+
+      // Store the selected value
+      details.querySelector(".feedback-form").dataset.value =
+        button.dataset.value;
+
+      // Highlight the selected button
+      feedbackButtons.forEach((btn) => btn.classList.remove("selected"));
+      button.classList.add("selected");
+    });
+  });
+
+  // Add submit feedback button event listener
+  const submitFeedback = details.querySelector(".submit-feedback");
+  if (submitFeedback) {
+    submitFeedback.addEventListener("click", () => {
+      const feedbackValue =
+        details.querySelector(".feedback-form").dataset.value;
+      const feedbackReason = details.querySelector(".feedback-reason").value;
+
+      // In a real implementation, this would send the feedback to a server
+      console.log("Feedback:", feedbackValue, feedbackReason);
+
+      // Show thank you message
+      details.querySelector(".feedback-form").style.display = "none";
+      details.querySelector(".feedback-thanks").style.display = "block";
+    });
+  }
+
+  // Close details when clicking outside
+  document.addEventListener("click", (e) => {
+    if (!details.contains(e.target) && e.target !== badge) {
+      details.style.display = "none";
+    }
+  });
+}
+
+// Helper function to get color based on score
+function getColorForScore(score) {
+  if (score >= 4) return "#4caf50"; // Green
+  if (score >= 3) return "#8bc34a"; // Light green
+  if (score >= 2) return "#ffc107"; // Amber
+  if (score >= 1) return "#ff9800"; // Orange
+  return "#f44336"; // Red
+}
+
+// Helper function to get color for risk level
+function getColorForRisk(risk) {
+  if (risk <= 1) return "#4caf50"; // Green
+  if (risk <= 2) return "#8bc34a"; // Light green
+  if (risk <= 3) return "#ffc107"; // Amber
+  if (risk <= 4) return "#ff9800"; // Orange
+  return "#f44336"; // Red
+}
+
+// Helper function to get shipping icon
+function getShippingIcon(method) {
+  switch (method) {
+    case "air":
+      return "✈️";
+    case "sea":
+      return "🚢";
+    case "truck":
+      return "🚚";
+    case "rail":
+      return "🚂";
+    default:
+      return "📦";
+  }
+}
+
+// Helper function to get emission comparisons
+function getEmissionComparisons(kgCO2) {
+  return {
+    drivingDistance: Math.round(kgCO2 * 6), // km in average car
+    phoneCycles: Math.round(kgCO2 * 500), // full phone charges
+    meatMeals: Math.round(kgCO2 / 7), // beef meals
+  };
+}
+
+// Add styles for the new sections
+const styleSheet = document.createElement("style");
+styleSheet.textContent = `
+  /* Sleek modal improvements */
+  .supply-chain-details {
+    background: #fff;
+    border-radius: 16px;
+    box-shadow: 0 4px 32px 0 rgba(76,175,80,0.13), 0 2px 8px 0 rgba(60,60,60,0.08);
+    padding: 18px 22px 18px 22px;
+    max-width: 420px;
+    min-width: 240px;
+    font-size: 0.97em;
+    color: #2e7d32;
+    border: 1.5px solid #c8e6c9;
+    position: absolute;
+    z-index: 10000;
+    margin-top: 8px;
+    margin-left: 0;
+    transition: box-shadow 0.2s;
+  }
+  .supply-chain-details h3, .supply-chain-details h4, .supply-chain-details h5, .supply-chain-details h6 {
+    color: #388e3c;
+    margin-top: 0.5em;
+    margin-bottom: 0.5em;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+  .supply-chain-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .supply-chain-header h3 {
+    font-size: 1.1em;
+    font-weight: 700;
+    margin: 0;
+    color: #388e3c;
+  }
+  .supply-chain-close {
+    background: none;
+    border: none;
+    font-size: 1.3em;
+    color: #81c784;
+    cursor: pointer;
+    margin-left: 8px;
+    margin-top: -2px;
+    transition: color 0.2s;
+  }
+  .supply-chain-close:hover {
+    color: #388e3c;
+  }
+  .supply-chain-summary-box {
+    background: #e8f5e9;
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-bottom: 10px;
+    color: #2e7d32;
+    font-size: 0.98em;
+  }
+  .supply-chain-metrics {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+  }
+  .supply-chain-metric {
+    flex: 1 1 120px;
+    background: #f9fbe7;
+    border-radius: 8px;
+    padding: 8px 10px 6px 10px;
+    margin-bottom: 0;
+    min-width: 120px;
+    color: #33691e;
+    font-size: 0.97em;
+    box-shadow: 0 1px 4px 0 rgba(76,175,80,0.04);
+  }
+  .metric-bar-container {
+    background: #e0f2f1;
+    border-radius: 4px;
+    height: 7px;
+    margin: 6px 0 4px 0;
+    width: 100%;
+    overflow: hidden;
+  }
+  .metric-bar {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.3s;
+  }
+  .metric-value {
+    font-size: 0.97em;
+    font-weight: 600;
+    margin: 2px 0 0 0;
+  }
+  .metric-explanation {
+    font-size: 0.93em;
+    color: #558b2f;
+    margin-bottom: 0;
+  }
+  .warning-banner {
+    background: #fffde7;
+    color: #e65100;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 0.97em;
+    margin-top: 8px;
+    margin-bottom: 0;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* Sleek badge improvements */
+  .sleek-badge {
+    background: linear-gradient(90deg, #e8f5e9 0%, #f1f8e9 100%);
+    border-radius: 14px;
+    box-shadow: 0 2px 12px 0 rgba(76,175,80,0.08), 0 1.5px 4px 0 rgba(60,60,60,0.04);
+    padding: 10px 14px 8px 14px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    min-width: 150px;
+    max-width: 220px;
+    border: 1.2px solid #c8e6c9;
+    margin: 0 0 8px 0;
+    transition: box-shadow 0.2s;
+  }
+  .sleek-badge:hover {
+    box-shadow: 0 4px 18px 0 rgba(76,175,80,0.18), 0 2px 8px 0 rgba(60,60,60,0.08);
+  }
+  .sleek-title {
+    display: flex;
+    align-items: center;
+    font-size: 0.98em;
+    font-weight: 600;
+    color: #388e3c;
+    margin-bottom: 4px;
+    letter-spacing: 0.01em;
+    gap: 5px;
+  }
+  .sleek-rating {
+    display: flex;
+    align-items: center;
+    margin-top: 1px;
+    margin-bottom: 1px;
+  }
+  .supply-chain-badge {
+    background: none;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  /* Universal box-sizing for layout consistency */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* Common Section Styling */
+.environmental-impact, 
+.end-of-life, 
+.labor-practices, 
+.green-delivery-options {
+  margin: 16px 0;
+  padding: 16px;
+  background-color: #f9f9f9;
+  border-radius: 6px;
+  overflow-wrap: break-word;
+}
+
+/* Section Titles */
+.environmental-impact h4, 
+.end-of-life h4, 
+.labor-practices h4, 
+.green-delivery-options h4 {
+  margin-bottom: 12px;
+  color: #2e7d32;
+}
+
+/* Responsive Grid Layouts */
+.impact-metrics, 
+.labor-metrics, 
+.eol-options, 
+.methodology-factors, 
+.delivery-options {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+/* Metric Boxes */
+.impact-metric, 
+.labor-metric, 
+.eol-option, 
+.methodology-factor, 
+.delivery-option {
+  background-color: #f0f0f0;
+  padding: 12px;
+  border-radius: 4px;
+  overflow-wrap: break-word;
+}
+
+.impact-metric h5, 
+.labor-metric h5, 
+.delivery-option h5, 
+.methodology-factor h5 {
+  margin-bottom: 8px;
+  font-size: 14px;
+  color: #2e7d32;
+}
+
+.methodology-factor h5 {
+  margin-bottom: 4px;
+}
+
+.metric-value {
+  font-weight: 600;
+  margin: 8px 0;
+  padding: 4px 8px;
+  border-radius: 4px;
+  display: inline-block;
+  word-break: break-word;
+}
+
+.metric-value.good {
+  background-color: #e8f5e9;
+  color: #2e7d32;
+}
+
+.metric-value.medium {
+  background-color: #fff8e1;
+  color: #ff8f00;
+}
+
+.metric-value.poor {
+  background-color: #ffebee;
+  color: #c62828;
+}
+
+/* End-of-Life Options */
+.eol-option {
+  text-align: center;
+}
+
+.eol-option.available {
+  background-color: #e8f5e9;
+  border: 1px solid #a5d6a7;
+}
+
+.eol-option.unavailable {
+  background-color: #f5f5f5;
+  color: #757575;
+}
+
+.eol-icon {
+  font-size: 24px;
+  margin: 8px 0;
+}
+
+.eol-note,
+.delivery-note {
+  margin-top: 12px;
+  font-style: italic;
+  color: #666;
+}
+
+/* Delivery Options */
+.delivery-option {
+  position: relative;
+}
+
+.delivery-option.eco-friendly {
+  background-color: #e8f5e9;
+  border: 1px solid #a5d6a7;
+}
+
+.delivery-option.balanced {
+  background-color: #fff8e1;
+  border: 1px solid #ffe082;
+}
+
+.delivery-option.express {
+  background-color: #ffebee;
+  border: 1px solid #ef9a9a;
+}
+
+.delivery-time {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.delivery-impact {
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.impact-label {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.impact-value {
+  font-weight: 600;
+}
+
+.impact-value.low {
+  color: #2e7d32;
+}
+
+.impact-value.medium {
+  color: #ff8f00;
+}
+
+.impact-value.high {
+  color: #c62828;
+}
+
+.green-ticks {
+  margin-left: 4px;
+}
+
+/* Supply Chain Options */
+.supply-chain-delivery-options {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #e0e0e0;
+  width: 100%;
+}
+
+.delivery-options-title {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.delivery-options-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.delivery-option-item {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  flex-wrap: wrap;
+  word-break: break-word;
+}
+
+.delivery-option-item:hover {
+  background-color: #f5f5f5;
+}
+
+.delivery-option-item input {
+  margin-right: 8px;
+  cursor: pointer;
+}
+
+.delivery-option-item.selected {
+  background-color: #f0f0f0;
+  font-weight: 600;
+}
+
+.delivery-option-item.eco .option-label {
+  color: #2e7d32;
+}
+
+.delivery-option-item.balanced .option-label {
+  color: #ff8f00;
+}
+
+.delivery-option-item.express .option-label {
+  color: #c62828;
+}
+
+.option-time {
+  margin-left: auto;
+  font-size: 11px;
+  color: #757575;
+}
+
+/* Flexible badge */
+.supply-chain-badge {
+  width: 100%;
+  max-width: 240px;
+  min-width: 160px;
+}
+
+/* Optional: Add horizontal padding to prevent edge overflow */
+body {
+  padding: 0 12px;
+}
+
+
+
+`;
+document.head.appendChild(styleSheet);
