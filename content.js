@@ -1124,6 +1124,77 @@ function generateSupplyChainDetails(score) {
 
 // Insert supply chain badge next to price
 function insertSupplyChainBadge(priceElement, scoreData) {
+  // Always recalculate the score here to guarantee badge and modal match
+  // Calculate score based on five criteria only (removed web verification)
+  let badgeOriginPoints =
+    scoreData.manufacturingCountry &&
+    scoreData.manufacturingCountry !== "Unknown"
+      ? 1
+      : 0;
+
+  // Use the same transparency logic for consistency
+  let badgeTransparencyPoints = 0;
+  const badgeSupplyChainDetails = generateSupplyChainDetails(scoreData.score);
+  if (badgeSupplyChainDetails.transparency === "High")
+    badgeTransparencyPoints = 1;
+  else if (badgeSupplyChainDetails.transparency === "Good")
+    badgeTransparencyPoints = 0.5; // Changed to 0.5 max for partial transparency
+  else if (badgeSupplyChainDetails.transparency === "Medium")
+    badgeTransparencyPoints = 0.5;
+  else if (badgeSupplyChainDetails.transparency === "Low")
+    badgeTransparencyPoints = 0.5; // Even low transparency gets partial credit
+  else badgeTransparencyPoints = 0;
+
+  // Each criterion is worth exactly 1 point max
+  let badgeCertPoints =
+    scoreData.explanation && /certificat/i.test(scoreData.explanation) ? 1 : 0;
+
+  let badgeMaterialPoints =
+    scoreData.explanation &&
+    /organic|recycled|sustainable|cotton|bamboo|hemp|linen|wool|biodegradable/i.test(
+      scoreData.explanation
+    )
+      ? 1
+      : 0;
+
+  let badgeEnvPoints =
+    scoreData.explanation &&
+    /carbon|neutral|offset|water|zero waste|renewable|energy|eco/i.test(
+      scoreData.explanation
+    )
+      ? 1
+      : 0;
+
+  // Calculate score without web verification - only 5 criteria count
+  let badgeCalculatedScore =
+    badgeOriginPoints +
+    badgeTransparencyPoints +
+    badgeCertPoints +
+    badgeMaterialPoints +
+    badgeEnvPoints;
+
+  // Ensure score is within range 0-5
+  badgeCalculatedScore = Math.max(0, badgeCalculatedScore);
+  badgeCalculatedScore = Math.min(5, badgeCalculatedScore);
+
+  // Round to nearest half-point for cleaner display
+  badgeCalculatedScore = Math.round(badgeCalculatedScore * 2) / 2;
+
+  // Log detailed score calculation for badge
+  console.log(`Badge sustainability score calculation:
+    - Origin Information: ${badgeOriginPoints} point(s)
+    - Supply Chain Transparency: ${badgeTransparencyPoints} point(s)
+    - Certifications: ${badgeCertPoints} point(s)
+    - Material Sourcing: ${badgeMaterialPoints} point(s)
+    - Environmental Practices: ${badgeEnvPoints} point(s)
+    = Total: ${badgeCalculatedScore}/5
+  `);
+
+  // Update the scoreData object with our calculated score
+  scoreData.calculatedScore = badgeCalculatedScore;
+  scoreData.score = badgeCalculatedScore;
+  scoreData.icons = getRatingIcons(Math.round(scoreData.score));
+
   // Create badge element
   const badge = document.createElement("div");
   badge.id = "supply-chain-badge";
@@ -1138,9 +1209,13 @@ function insertSupplyChainBadge(priceElement, scoreData) {
     <div class="supply-chain-badge-content sleek-badge" style="background: #fff; border-radius: 18px; box-shadow: 0 2px 12px 0 rgba(60,60,60,0.10); padding: 8px 18px 8px 14px; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 120px;">
       <span class="supply-chain-badge-title" style="font-size: 0.95em; font-weight: 600; color: #222; letter-spacing: 0.01em; margin-bottom: 2px;">Sustainability Score</span>
       <span style="display: flex; align-items: center; gap: 8px;">
-        <span class="supply-chain-score" style="color: ${badgeColor}; font-size: 1.15em; font-weight: 700;">${
-    scoreData.score !== null ? `${scoreData.score}/5` : "N/A"
-  }</span>
+        <span class="supply-chain-score" style="color: ${badgeColor}; font-size: 1.15em; font-weight: 700;">
+          ${
+            scoreData.score !== null && scoreData.score !== undefined
+              ? `${scoreData.score}/5`
+              : "N/A"
+          }
+        </span>
         <span class="supply-chain-icons" style="font-size: 1.2em; display: flex; align-items: center;">${
           scoreData.icons
         }</span>
@@ -1197,150 +1272,342 @@ function insertSupplyChainBadge(priceElement, scoreData) {
     return truncated + "...";
   }
 
-  // --- NEW: If no manufacturing origin, try to fetch it using the search API ---
+  // --- NEW: Improved origin detection logic ---
   if (
     !scoreData.manufacturingCountry ||
     scoreData.manufacturingCountry === "Unknown" ||
     scoreData.manufacturingCountry === null
   ) {
-    // Try to fetch product brand from the page if not present in scoreData
-    let productBrand = scoreData.productBrand;
-    if (!productBrand) {
-      const brandSelectors = [
-        ".brand",
-        ".product-brand",
-        '[itemprop="brand"]',
-        "[data-brand]",
-        ".a-brand",
-        "#bylineInfo",
-        ".brand-name",
-        ".productMeta-brand",
-        ".product-meta__vendor",
-        ".product-vendor",
-        ".manufacturer",
-        '[data-testid="brand-name"]',
-        '[data-test="brand-name"]',
-      ];
-      for (const selector of brandSelectors) {
-        const el = document.querySelector(selector);
-        if (el && el.textContent.trim().length > 0) {
-          productBrand = el.textContent.trim();
-          break;
-        }
-      }
-      // Fallback: try meta tag
-      if (!productBrand) {
-        const metaBrand = document.querySelector(
-          'meta[name="brand"], meta[property="og:brand"]'
-        );
-        if (metaBrand && metaBrand.content) {
-          productBrand = metaBrand.content.trim();
-        }
-      }
+    // Try to extract "Made in <Country>" from product description
+    let madeInMatch = null;
+    if (scoreData.explanation) {
+      madeInMatch = scoreData.explanation.match(/made in ([A-Za-z ]+)/i);
     }
-    // Use product title from badge or fallback to document title
-    const productTitle =
-      document.querySelector(".supply-chain-badge-title")?.textContent ||
-      document.title;
-    fetchSustainabilityWebSummary(productTitle, productBrand || "").then(
-      (webSummary) => {
-        // Try to extract a likely country from the web summary using a simple regex for country names
-        const countryList = [
-          "China",
-          "India",
-          "Bangladesh",
-          "Vietnam",
-          "USA",
-          "United States",
-          "Germany",
-          "France",
-          "Italy",
-          "Spain",
-          "UK",
-          "United Kingdom",
-          "Japan",
-          "South Korea",
-          "Taiwan",
-          "Malaysia",
-          "Indonesia",
-          "Thailand",
-          "Turkey",
-          "Mexico",
-          "Brazil",
-          "Canada",
-          "Australia",
-          "Sweden",
-          "Finland",
-          "Norway",
-          "Denmark",
-          "Netherlands",
-          "Belgium",
-          "Switzerland",
-          "Austria",
-          "Poland",
-          "Czech Republic",
-          "Hungary",
-          "Romania",
-          "Bulgaria",
-          "Greece",
-          "Portugal",
-          "Ireland",
-          "Singapore",
-          "Hong Kong",
-          "UAE",
-          "Saudi Arabia",
-          "South Africa",
-          "Egypt",
-          "Morocco",
-          "Kenya",
-          "Nigeria",
-          "Ethiopia",
-          "Pakistan",
-          "Sri Lanka",
-          "Cambodia",
-          "Myanmar",
-          "Philippines",
-          "New Zealand",
+    if (madeInMatch && madeInMatch[1]) {
+      // Found made in country in product description
+      scoreData.manufacturingCountry = madeInMatch[1].trim();
+      // Try to get user's country from website (shipping location)
+      let userCountry = null;
+      // Try to get from common selectors or fallback to browser language
+      const countrySelectors = [
+        "[data-shipping-country]",
+        "#shippingCountry",
+        ".shipping-country",
+        'select[name="country"]',
+        'input[name="country"]',
+        ".locale-country",
+      ];
+      for (const selector of countrySelectors) {
+        const el = document.querySelector(selector);
+        if (el) {
+          if (el.value) userCountry = el.value;
+          else if (el.textContent) userCountry = el.textContent.trim();
+          if (userCountry) break;
+        }
+      }
+      if (!userCountry && navigator.language) {
+        // Fallback: use browser language country
+        const lang = navigator.language.split("-");
+        if (lang.length > 1) userCountry = lang[1];
+      }
+      // Calculate CO2 emissions based on made in country and user country (if available)
+      scoreData.co2Emissions = calculateCO2Emissions(
+        scoreData.manufacturingCountry
+      );
+      scoreData.userCountry = userCountry || null;
+    } else {
+      // No made in info in description, try to get brand origin from web search
+      let productBrand = scoreData.productBrand;
+      if (!productBrand) {
+        const brandSelectors = [
+          ".brand",
+          ".product-brand",
+          '[itemprop="brand"]',
+          "[data-brand]",
+          ".a-brand",
+          "#bylineInfo",
+          ".brand-name",
+          ".productMeta-brand",
+          ".product-meta__vendor",
+          ".product-vendor",
+          ".manufacturer",
+          '[data-testid="brand-name"]',
+          '[data-test="brand-name"]',
         ];
-        let foundCountry = null;
-        for (const country of countryList) {
-          const regex = new RegExp(`\\b${country}\\b`, "i");
-          if (webSummary && regex.test(webSummary)) {
-            foundCountry = country;
+        for (const selector of brandSelectors) {
+          const el = document.querySelector(selector);
+          if (el && el.textContent.trim().length > 0) {
+            productBrand = el.textContent.trim();
             break;
           }
         }
-        if (foundCountry) {
-          // Update the badge and details with the found country
-          scoreData.manufacturingCountry = foundCountry;
-          // Optionally, recalculate CO2 emissions and update the UI
-          scoreData.co2Emissions = calculateCO2Emissions(foundCountry);
-          // Also update the brand for display if it was missing
-          scoreData.productBrand = productBrand;
-          // Re-render the badge and details with the new info
-          // Remove old badge and details
-          const oldBadge = document.getElementById("supply-chain-badge");
-          const oldDetails = document.getElementById("supply-chain-details");
-          if (oldBadge) oldBadge.remove();
-          if (oldDetails) oldDetails.remove();
-          // Insert updated badge
-          insertSupplyChainBadge(priceElement, scoreData);
+        // Fallback: try meta tag
+        if (!productBrand) {
+          const metaBrand = document.querySelector(
+            'meta[name="brand"], meta[property="og:brand"]'
+          );
+          if (metaBrand && metaBrand.content) {
+            productBrand = metaBrand.content.trim();
+          }
         }
       }
-    );
+      let productTitle =
+        document.querySelector(".supply-chain-badge-title")?.textContent ||
+        document.title;
+      let searchQuery = productBrand
+        ? `in which country ${productBrand} is made?`
+        : `in which country ${productTitle} is made?`;
+      console.log(
+        "[DEBUG] Brand origin fallback: productBrand=",
+        productBrand,
+        "productTitle=",
+        productTitle,
+        "searchQuery=",
+        searchQuery
+      );
+      fetchSustainabilityWebSummary(searchQuery, "").then((webSummary) => {
+        console.log("[DEBUG] Web summary for brand origin search:", webSummary);
+        // Use Groq AI to analyze the web search results for the most likely country
+        analyzeWithGroq(searchQuery, webSummary, "").then((aiResult) => {
+          console.log("[DEBUG] Groq AI result for brand origin:", aiResult);
+          if (aiResult && aiResult.manufacturingCountry) {
+            console.log(
+              "[DEBUG] Groq AI extracted manufacturingCountry:",
+              aiResult.manufacturingCountry
+            );
+            scoreData.brandOriginCountry = aiResult.manufacturingCountry;
+          } else {
+            // fallback: try to extract a likely country from the web summary using a simple regex for country names
+            const countryList = [
+              "China",
+              "India",
+              "Bangladesh",
+              "Vietnam",
+              "USA",
+              "United States",
+              "Germany",
+              "France",
+              "Italy",
+              "Spain",
+              "UK",
+              "United Kingdom",
+              "Japan",
+              "South Korea",
+              "Taiwan",
+              "Malaysia",
+              "Indonesia",
+              "Thailand",
+              "Turkey",
+              "Mexico",
+              "Brazil",
+              "Canada",
+              "Australia",
+              "Sweden",
+              "Finland",
+              "Norway",
+              "Denmark",
+              "Netherlands",
+              "Belgium",
+              "Switzerland",
+              "Austria",
+              "Poland",
+              "Czech Republic",
+              "Hungary",
+              "Romania",
+              "Bulgaria",
+              "Greece",
+              "Portugal",
+              "Ireland",
+              "Singapore",
+              "Hong Kong",
+              "UAE",
+              "Saudi Arabia",
+              "South Africa",
+              "Egypt",
+              "Morocco",
+              "Kenya",
+              "Nigeria",
+              "Ethiopia",
+              "Pakistan",
+              "Sri Lanka",
+              "Cambodia",
+              "Myanmar",
+              "Philippines",
+              "New Zealand",
+            ];
+            let foundCountry = null;
+            for (const country of countryList) {
+              const regex = new RegExp(`\\b${country}\\b`, "i");
+              if (webSummary && regex.test(webSummary)) {
+                foundCountry = country;
+                break;
+              }
+            }
+            console.log("[DEBUG] Regex fallback found country:", foundCountry);
+            if (foundCountry) {
+              scoreData.brandOriginCountry = foundCountry;
+            }
+          }
+        });
+      });
+    }
   }
 
-  // Populate details (web search findings section removed)
+  // Show how the score is being calculated instead of a text summary
+  // --- Calculate points for each section - EXACTLY the same logic as in badge ---
+  let originPoints =
+    scoreData.manufacturingCountry &&
+    scoreData.manufacturingCountry !== "Unknown"
+      ? 1
+      : 0;
+
+  // Transparency is worth max 1 point, but can be 0.5 for partial transparency
+  let transparencyPoints = 0;
+  if (supplyChainDetails.transparency === "High") transparencyPoints = 1;
+  else if (supplyChainDetails.transparency === "Good")
+    transparencyPoints = 0.5; // Changed to 0.5 for partial transparency
+  else if (supplyChainDetails.transparency === "Medium")
+    transparencyPoints = 0.5;
+  else if (supplyChainDetails.transparency === "Low") transparencyPoints = 0.5;
+  else transparencyPoints = 0;
+
+  // Each criterion is worth exactly 1 point max
+  let certPoints =
+    scoreData.explanation && /certificat/i.test(scoreData.explanation) ? 1 : 0;
+
+  let materialPoints =
+    scoreData.explanation &&
+    /organic|recycled|sustainable|cotton|bamboo|hemp|linen|wool|biodegradable/i.test(
+      scoreData.explanation
+    )
+      ? 1
+      : 0;
+
+  let envPoints =
+    scoreData.explanation &&
+    /carbon|neutral|offset|water|zero waste|renewable|energy|eco/i.test(
+      scoreData.explanation
+    )
+      ? 1
+      : 0;
+
+  // Web verification is tracked but NOT included in score calculation
+  // It's only used to verify the claims in the product description
+  let webPoints = 0;
+  if (
+    scoreData.verifiedScore !== null &&
+    scoreData.verifiedScore !== undefined
+  ) {
+    // Calculate web points for display purposes only (no impact on score)
+    webPoints = Math.min(1, scoreData.verifiedScore / 100);
+    webPoints = Math.round(webPoints * 100) / 100;
+  }
+
+  // ROBUSTLY RECALCULATE TOTAL SCORE based only on the 5 criteria
+  // Sum all points from each category (excluding web verification)
+  let calculatedScore =
+    originPoints + transparencyPoints + certPoints + materialPoints + envPoints;
+
+  // Ensure score is within range 0-5
+  calculatedScore = Math.max(0, calculatedScore);
+  calculatedScore = Math.min(5, calculatedScore);
+
+  // Round to nearest half-point for cleaner display
+  calculatedScore = Math.round(calculatedScore * 2) / 2;
+
+  // Log detailed score calculation
+  console.log(`Modal sustainability score calculation:
+    - Origin Information: ${originPoints} point(s)
+    - Supply Chain Transparency: ${transparencyPoints} point(s)
+    - Certifications: ${certPoints} point(s)
+    - Material Sourcing: ${materialPoints} point(s)
+    - Environmental Practices: ${envPoints} point(s)
+    = Total: ${calculatedScore}/5 (Web verification excluded from score)
+  `);
+
+  // Store original score for logging
+  const originalScore = scoreData.score;
+
+  // Update the scoreData object with our calculated score for reference
+  scoreData.calculatedScore = calculatedScore;
+
+  // Update the display score to use our calculated value
+  // This ensures both the badge and modal use the same calculated score
+  scoreData.score = calculatedScore;
+
+  // Update icons to match new score (using rounded value for icons)
+  scoreData.icons = getRatingIcons(Math.round(scoreData.score));
+
+  console.log(
+    `Score updated: ${originalScore} → ${scoreData.score} (5 criteria only, no web verification)`
+  );
+
+  // Compose the breakdown UI ("How This Rating Is Calculated" section removed as requested)
   details.innerHTML = `
     <div class="supply-chain-header">
       <h3>Sustainability Index: <br> <br> <span style="color: ${badgeColor}">${
     scoreData.score
   }/5 ${scoreData.icons}</span></h3>
       <button class="supply-chain-close">×</button>
-    </div>      <div class="supply-chain-summary-box">
-      <p class="supply-chain-summary">${truncateExplanation(
-        scoreData.explanation || supplyChainDetails.summary
-      )}</p>
+    </div>
+    <div class="supply-chain-summary-box">
+      <div class="score-breakdown">
+        <h4 style="margin-bottom: 8px;">How this score is calculated:</h4>
+        
+        <ul style="list-style: disc inside; margin:0; padding-left: 18px;">
+          <li><b>Origin Information</b> (${originPoints} point${
+    originPoints !== 1 ? "s" : ""
+  }):
+            <span>${
+              scoreData.manufacturingCountry &&
+              scoreData.manufacturingCountry !== "Unknown"
+                ? `Manufactured in <b>${scoreData.manufacturingCountry}</b>`
+                : scoreData.brandOriginCountry
+                ? `⚠️ The brand seems to be originated from <b>${scoreData.brandOriginCountry}</b>`
+                : "⚠️ No manufacturing origin information available"
+            }</span>
+          </li>
+          <li><b>Supply Chain Transparency</b> (${transparencyPoints} point${
+    transparencyPoints !== 1 ? "s" : ""
+  }):
+            <span>${supplyChainDetails.transparencyExplanation}</span>
+          </li>
+          <li><b>Certifications</b> (${certPoints} point${
+    certPoints !== 1 ? "s" : ""
+  }):
+            <span>${
+              scoreData.explanation && /certificat/i.test(scoreData.explanation)
+                ? "Certifications mentioned"
+                : "No certifications found"
+            }</span>
+          </li>
+          <li><b>Material Sourcing</b> (${materialPoints} point${
+    materialPoints !== 1 ? "s" : ""
+  }):
+            <span>${
+              scoreData.explanation &&
+              /organic|recycled|sustainable|cotton|bamboo|hemp|linen|wool|biodegradable/i.test(
+                scoreData.explanation
+              )
+                ? "Sustainable/organic/recycled materials detected"
+                : "No clear sustainable materials"
+            }</span>
+          </li>
+          <li><b>Environmental Practices</b> (${envPoints} point${
+    envPoints !== 1 ? "s" : ""
+  }):
+            <span>${
+              scoreData.explanation &&
+              /carbon|neutral|offset|water|zero waste|renewable|energy|eco/i.test(
+                scoreData.explanation
+              )
+                ? "Environmental practices mentioned"
+                : "No environmental practices found"
+            }</span>
+          </li>
+
+        </ul>
+      </div>
       ${
         isHighEmission
           ? `<div class="warning-banner">⚠️ High carbon footprint detected</div>`
@@ -1693,37 +1960,7 @@ ${
     : ""
 }
 
-<div class="supply-chain-methodology">
-  <h4>How This Rating Is Calculated</h4>
-  <p>Our index evaluates products based on the most reliably extractable information from product pages and web search. Each factor contributes points to a maximum score of 5:</p>
-  <div class="methodology-factors">
-    <div class="methodology-factor">
-      <h5>Origin Information <span style="color:#888;font-weight:normal;">(+2 points)</span></h5>
-      <p>Manufacturing country and estimated shipping distance</p>
-    </div>
-    <div class="methodology-factor">
-      <h5>Supply Chain Transparency <span style="color:#888;font-weight:normal;">(+1 point)</span></h5>
-      <p>Presence of traceability, supplier info, or transparency keywords</p>
-    </div>
-    <div class="methodology-factor">
-      <h5>Certifications <span style="color:#888;font-weight:normal;">(+2 points)</span></h5>
-      <p>Explicit mentions of third-party sustainability certifications</p>
-    </div>
-    <div class="methodology-factor">
-      <h5>Material Sourcing <span style="color:#888;font-weight:normal;">(+1 point)</span></h5>
-      <p>Use of sustainable, recycled, or organic materials</p>
-    </div>
-    <div class="methodology-factor">
-      <h5>Environmental Practices <span style="color:#888;font-weight:normal;">(+1 point)</span></h5>
-      <p>Claims of carbon neutrality, water saving, zero waste, etc.</p>
-    </div>
-    <div class="methodology-factor">
-      <h5>Web Verification <span style="color:#888;font-weight:normal;">(-2 to +1 points)</span></h5>
-      <p>Positive or negative signals from web search (e.g. awards, controversies)</p>
-    </div>
-  </div>
-  <p class="methodology-note">A score of 0 indicates no supply chain information is available, while 5 represents exceptional transparency and sustainability based on available data.</p>
-</div>
+
 
     
     <div class="supply-chain-recommendations">
@@ -1872,10 +2109,11 @@ try {
   localStorageUsable = false;
 }
 
+// Safe storage implementation with fallback to in-memory storage
 const safeStorage = {
-  data: {}, // In-memory fallback
+  _storageData: {}, // In-memory fallback storage
 
-  getItem: function (key) {
+  getItem(key) {
     if (localStorageUsable) {
       try {
         return localStorage.getItem(key);
@@ -1883,55 +2121,44 @@ const safeStorage = {
         localStorageUsable = false;
       }
     }
-    return this.data[key] || null;
+    return this._storageData[key] || null;
   },
 
-  setItem: function (key, value) {
+  setItem(key, value) {
     if (localStorageUsable) {
       try {
         localStorage.setItem(key, value);
-        return;
       } catch (e) {
         localStorageUsable = false;
+        this._storageData[key] = value;
       }
+    } else {
+      this._storageData[key] = value;
     }
-    this.data[key] = value;
   },
 
-  removeItem: function (key) {
+  removeItem(key) {
     if (localStorageUsable) {
       try {
         localStorage.removeItem(key);
-        return;
       } catch (e) {
         localStorageUsable = false;
       }
     }
-    delete this.data[key];
+    delete this._storageData[key];
   },
 
-  clear: function () {
+  clear() {
     if (localStorageUsable) {
       try {
         localStorage.clear();
-        return;
       } catch (e) {
         localStorageUsable = false;
       }
     }
-    this.data = {};
+    this._storageData = {};
   },
 };
-
-// Override global window.localStorage in content script (doesn't affect the page itself)
-try {
-  Object.defineProperty(window, "localStorageWrapper", {
-    value: safeStorage,
-    writable: false,
-  });
-} catch (e) {
-  console.warn("Could not define localStorage wrapper:", e);
-}
 
 // Patch any potential localStorage references in this script
 function patchLocalStorageReferences() {
