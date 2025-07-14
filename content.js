@@ -62,75 +62,6 @@ function isEcommerceSite() {
   const host = window.location.hostname.toLowerCase();
   return ecommerceDomains.some((domain) => host.includes(domain));
 }
-// Fetch and summarize web search results for product/brand sustainability
-async function fetchSustainabilityWebSummary(title, brand = "") {
-  // Use only the main product name (first part of title) and brand for the query
-  let mainTitle = title;
-  if (title && title.length > 0) {
-    // Split on common separators and take the first part (most relevant)
-    mainTitle = title.split(/[|,-]/)[0].trim();
-    // If still too long, take first 6 words
-    if (mainTitle.split(" ").length > 6) {
-      mainTitle = mainTitle.split(" ").slice(0, 6).join(" ");
-    }
-  }
-  const query = `${brand} ${mainTitle} sustainability ethical issues`.trim();
-  const endpoint = `https://duckduckgo8.p.rapidapi.com/?q=${encodeURIComponent(
-    query
-  )}`;
-  const rapidApiKey = "5e09ebcf46msh74d86497ba030a4p1105adjsn4f5690631cdd";
-  try {
-    // Use the same headers and method as the provided curl example
-    const response = await fetch(endpoint, {
-      method: "GET",
-      headers: {
-        "X-RapidAPI-Host": "duckduckgo8.p.rapidapi.com",
-        "X-RapidAPI-Key": rapidApiKey,
-      },
-    });
-    if (!response.ok) throw new Error("DuckDuckGo API error");
-    const data = await response.json();
-    // Summarize top results (titles + snippets)
-    if (data && data.results && Array.isArray(data.results)) {
-      // Look specifically for country mentions in web results to assist with origin detection
-      let countryMentionsFound = false;
-      const summary = data.results
-        .slice(0, 5)
-        .map((r) => {
-          // Check if any result mentions "made in" or country of origin
-          const hasOriginInfo =
-            /made in|manufactured in|country of origin|factory|manufacturing location/i.test(
-              r.title
-            ) ||
-            /made in|manufactured in|country of origin|factory|manufacturing location/i.test(
-              r.snippet
-            );
-          if (hasOriginInfo) {
-            countryMentionsFound = true;
-            return `- [ORIGIN INFO] ${r.title}: ${r.snippet}`;
-          }
-          return `- ${r.title}: ${r.snippet}`;
-        })
-        .join("\n");
-
-      if (countryMentionsFound) {
-        console.log(
-          "[DEBUG] Web search found potential manufacturing origin information"
-        );
-      } else {
-        console.log(
-          "[DEBUG] Web search did not find explicit manufacturing origin information"
-        );
-      }
-
-      return summary || "No relevant web results found.";
-    }
-    return "No relevant web results found.";
-  } catch (e) {
-    console.error("DuckDuckGo web search error:", e);
-    return "Web search unavailable.";
-  }
-}
 
 // Truncate helper to avoid token limit errors
 function truncate(str, maxLen) {
@@ -156,10 +87,13 @@ async function analyzeWithGroq(title, description, webSummary = "") {
   let productTypeGuidelines = "";
   try {
     // Import from product_types.js file if available, otherwise use default criteria
-    productTypeGuidelines = getProductTypeSpecificGuidelines(
-      title,
-      safeDescription
-    );
+    // productTypeGuidelines = getProductTypeSpecificGuidelines(
+    //   title,
+    //   safeDescription
+    // );
+    // Function not defined, use default criteria
+    productTypeGuidelines =
+      "Use general sustainability criteria appropriate for this product type.";
   } catch (e) {
     console.warn("Could not get product-specific guidelines:", e);
     productTypeGuidelines =
@@ -397,6 +331,181 @@ IMPORTANT INSTRUCTIONS:
     return null;
   }
 }
+
+// Calculate sustainability score based on 5 specific criteria
+function calculateSustainabilityScore(productText) {
+  // Initialize the scoring object
+  const sustainabilityScore = {
+    originMentioned: {
+      score: 0,
+      evidence: "",
+    },
+    certifications: {
+      score: 0,
+      evidence: "",
+    },
+    sustainableMaterials: {
+      score: 0,
+      evidence: "",
+    },
+    endOfLife: {
+      score: 0,
+      evidence: "",
+    },
+    environmentalImpact: {
+      score: 0,
+      evidence: "",
+    },
+    totalScore: 0,
+  };
+
+  // Check for manufacturing origin
+  const originPatterns = [
+    /country\s*of\s*origin\s*[:\-–=]\s*([A-Za-z\s\-']{2,30})/i,
+    /made\s*in\s*([A-Za-z\s\-']{2,30})/i,
+    /manufactured\s*in\s*([A-Za-z\s\-']{2,30})/i,
+    /origin\s*[:\-–=]\s*([A-Za-z\s\-']{2,30})/i,
+  ];
+
+  for (const pattern of originPatterns) {
+    const match = productText.match(pattern);
+    if (match && match[1]) {
+      const country = match[1].replace(/[^A-Za-z\s\-']/g, "").trim();
+      if (
+        country.length >= 2 &&
+        country.length <= 30 &&
+        !/unknown|n\/a|not specified|not available|unavailable/i.test(country)
+      ) {
+        sustainabilityScore.originMentioned.score = 1;
+        sustainabilityScore.originMentioned.evidence = match[0];
+        console.log("[SUSTAINABILITY] Origin found:", country);
+        break;
+      }
+    }
+  }
+
+  // Check for sustainability certifications
+  const certificationPatterns = [
+    /GOTS|Global\s*Organic\s*Textile\s*Standard/i,
+    /OEKO[\-\s]?TEX/i,
+    /FSC|Forest\s*Stewardship\s*Council/i,
+    /B\s*Corp|B\s*Corporation/i,
+    /Fairtrade|Fair\s*Trade/i,
+    /USDA\s*Organic/i,
+    /Rainforest\s*Alliance/i,
+    /Cradle\s*to\s*Cradle/i,
+    /Energy\s*Star/i,
+    /LEED|Leadership\s*in\s*Energy/i,
+    /Green\s*Seal/i,
+    /certified\s*organic/i,
+    /eco[\-\s]?cert/i,
+    /BlueSign/i,
+    /Ecolabel/i,
+    /EU\s*Flower/i,
+    /Nordic\s*Swan/i,
+  ];
+
+  for (const pattern of certificationPatterns) {
+    const match = productText.match(pattern);
+    if (match) {
+      sustainabilityScore.certifications.score = 1;
+      sustainabilityScore.certifications.evidence = match[0];
+      console.log("[SUSTAINABILITY] Certification found:", match[0]);
+      break;
+    }
+  }
+
+  // Check for sustainable materials
+  const materialPatterns = [
+    /sustainable\s*material/i,
+    /recycled\s*(?:content|material|fabric|plastic|paper|glass|metal)/i,
+    /organic\s*(?:cotton|material|fabric|fiber)/i,
+    /bamboo\s*(?:fiber|material)/i,
+    /eco[\-\s]?friendly\s*material/i,
+    /biodegradable\s*material/i,
+    /renewable\s*(?:material|resource)/i,
+    /natural\s*(?:fiber|material)s?(?!\s*gas)/i,
+    /sustainable\s*(?:wood|timber|paper|material|cotton|fabric)/i,
+    /ethically\s*sourced\s*(?:material|ingredient)/i,
+    /plant[\-\s]based/i,
+  ];
+
+  for (const pattern of materialPatterns) {
+    const match = productText.match(pattern);
+    if (match) {
+      sustainabilityScore.sustainableMaterials.score = 1;
+      sustainabilityScore.sustainableMaterials.evidence = match[0];
+      console.log("[SUSTAINABILITY] Sustainable material found:", match[0]);
+      break;
+    }
+  }
+
+  // Check for end-of-life information
+  const endOfLifePatterns = [
+    /recyclable/i,
+    /biodegradable/i,
+    /compostable/i,
+    /take[\-\s]back\s*(?:program|initiative)/i,
+    /return\s*(?:program|policy)\s*for\s*(?:recycling|disposal)/i,
+    /product\s*(?:can|may)\s*be\s*recycled/i,
+    /disposal\s*instructions/i,
+    /(?:made|designed)\s*to\s*be\s*(?:recycled|reused)/i,
+    /circular\s*(?:design|economy)/i,
+    /disassembly\s*instructions/i,
+  ];
+
+  for (const pattern of endOfLifePatterns) {
+    const match = productText.match(pattern);
+    if (match) {
+      sustainabilityScore.endOfLife.score = 1;
+      sustainabilityScore.endOfLife.evidence = match[0];
+      console.log("[SUSTAINABILITY] End-of-life info found:", match[0]);
+      break;
+    }
+  }
+
+  // Check for environmental impact disclosure
+  const environmentalImpactPatterns = [
+    /carbon\s*(?:footprint|neutral|negative|offset)/i,
+    /(?:reduced|lower|less)\s*(?:water|energy)\s*(?:usage|consumption)/i,
+    /zero\s*(?:waste|emission)/i,
+    /(?:reduced|lower|less)\s*(?:CO2|carbon dioxide|greenhouse gas|GHG)/i,
+    /environmental\s*impact\s*(?:statement|assessment)/i,
+    /life\s*cycle\s*assessment/i,
+    /(?:water|energy)\s*saving/i,
+    /climate\s*(?:friendly|positive|impact)/i,
+    /(?:renewable|green|clean)\s*energy/i,
+  ];
+
+  for (const pattern of environmentalImpactPatterns) {
+    const match = productText.match(pattern);
+    if (match) {
+      sustainabilityScore.environmentalImpact.score = 1;
+      sustainabilityScore.environmentalImpact.evidence = match[0];
+      console.log(
+        "[SUSTAINABILITY] Environmental impact info found:",
+        match[0]
+      );
+      break;
+    }
+  }
+
+  // Calculate total score (0-5)
+  sustainabilityScore.totalScore =
+    sustainabilityScore.originMentioned.score +
+    sustainabilityScore.certifications.score +
+    sustainabilityScore.sustainableMaterials.score +
+    sustainabilityScore.endOfLife.score +
+    sustainabilityScore.environmentalImpact.score;
+
+  console.log(
+    "[SUSTAINABILITY] Final score breakdown:",
+    JSON.stringify(sustainabilityScore, null, 2)
+  );
+
+  return sustainabilityScore;
+}
+
 // Global settings
 let settings = {
   enabled: true,
@@ -847,19 +956,57 @@ ${sustainabilityClaims}
         }
       }
 
-      // Fetch web search summary using both brand and title, then analyze with Groq AI
-      fetchSustainabilityWebSummary(productTitle, productBrand)
-        .then((webSummary) =>
-          analyzeWithGroq(productTitle, enhancedDescription, webSummary)
-        )
+      // First calculate sustainability score based on our 5 criteria
+      const sustainabilityScoreData =
+        calculateSustainabilityScore(enhancedDescription);
+
+      // Log full text for debugging
+      console.log(
+        "[DEBUG] Full product description for scoring:",
+        enhancedDescription.substring(0, 500) + "..."
+      );
+
+      // Analyze with Groq AI using only local product description and details
+      analyzeWithGroq(productTitle, enhancedDescription, "")
         .then((aiScore) => {
-          if (aiScore) {
-            // --- Country of origin override logic ---
-            const countryOfOriginMatch = productDescription.match(
-              /country of origin[:\s]*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i
+          // --- Manufacturing origin logic: Only show if explicitly found ---
+          let explicitCountry = null;
+
+          // Use origin from sustainability score if available
+          if (sustainabilityScoreData.originMentioned.score === 1) {
+            // Extract country from the evidence
+            const originPatterns = [
+              /country\s*of\s*origin\s*[:\-–=]\s*([A-Za-z\s\-']{2,30})/i,
+              /made\s*in\s*([A-Za-z\s\-']{2,30})/i,
+              /manufactured\s*in\s*([A-Za-z\s\-']{2,30})/i,
+              /origin\s*[:\-–=]\s*([A-Za-z\s\-']{2,30})/i,
+            ];
+
+            for (const pattern of originPatterns) {
+              const match =
+                sustainabilityScoreData.originMentioned.evidence.match(pattern);
+              if (match && match[1]) {
+                explicitCountry = match[1]
+                  .replace(/[^A-Za-z\s\-']/g, "")
+                  .trim();
+                console.log(
+                  "[DEBUG] Explicit country of origin found:",
+                  explicitCountry
+                );
+                break;
+              }
+            }
+          }
+
+          // Fallback to old method if needed
+          if (!explicitCountry) {
+            const explicitMatch = productDescription.match(
+              /country\s*of\s*origin\s*[:\-–=]\s*([A-Za-z\s\-']{2,30})/i
             );
-            if (countryOfOriginMatch && countryOfOriginMatch[1]) {
-              const country = countryOfOriginMatch[1].trim();
+            if (explicitMatch && explicitMatch[1]) {
+              const country = explicitMatch[1]
+                .replace(/[^A-Za-z\s\-']/g, "")
+                .trim();
               if (
                 country.length >= 2 &&
                 country.length <= 30 &&
@@ -867,13 +1014,29 @@ ${sustainabilityClaims}
                   country
                 )
               ) {
-                aiScore.manufacturingCountry = country;
+                explicitCountry = country;
                 console.log(
-                  "[DEBUG] Overriding AI country with explicit Country of origin:",
+                  "[DEBUG] Explicit country of origin found in description:",
                   country
                 );
               }
             }
+          }
+
+          if (aiScore) {
+            if (explicitCountry) {
+              aiScore.manufacturingCountry = explicitCountry;
+            } else {
+              aiScore.manufacturingCountry = null;
+              console.log(
+                "[DEBUG] No explicit manufacturing origin found in product description. Not using AI guess."
+              );
+            }
+
+            // Use our own sustainability score instead of AI score
+            aiScore.sustainabilityScoreData = sustainabilityScoreData;
+            aiScore.score = sustainabilityScoreData.totalScore;
+
             // Debug the AI's country extraction before inserting badge
             console.log(
               "[DEBUG] AI analysis result:",
@@ -883,32 +1046,9 @@ ${sustainabilityClaims}
                   ? aiScore.explanation.substring(0, 100) + "..."
                   : "No explanation",
                 score: aiScore.score,
+                sustainabilityScore: sustainabilityScoreData,
               })
             );
-            // Ensure manufacturingCountry is properly validated and cleaned
-            if (aiScore.manufacturingCountry) {
-              const country = aiScore.manufacturingCountry.trim();
-              const rejectedPhrases =
-                /manufacturing location|country of origin|manufacturing country|manufactured in|produced in|from|origin|or/i;
-              if (
-                country.length >= 3 &&
-                !/unknown|n\/a|not specified|not available|unavailable/i.test(
-                  country
-                ) &&
-                !rejectedPhrases.test(country)
-              ) {
-                console.log(
-                  "[DEBUG] Valid manufacturing country from AI:",
-                  country
-                );
-              } else {
-                console.log(
-                  "[DEBUG] AI returned invalid country or prompt instruction, setting to null:",
-                  country
-                );
-                aiScore.manufacturingCountry = null;
-              }
-            }
             insertSupplyChainBadge(priceElement, aiScore);
           } else {
             insertSupplyChainBadge(priceElement, {
@@ -1142,10 +1282,6 @@ function calculateCO2Emissions(manufacturingCountry) {
   };
 }
 
-// Update the calculateSupplyChainScore function to better detect eco-friendly products
-
-// (Removed) calculateSupplyChainScore: All scoring is now handled by AI in analyzeWithGroq.
-
 // Get rating icons based on score (0-5)
 function getRatingIcons(score) {
   let icons = "";
@@ -1248,76 +1384,147 @@ function generateSupplyChainDetails(score) {
 
 // Insert supply chain badge next to price
 function insertSupplyChainBadge(priceElement, scoreData) {
-  // Always recalculate the score here to guarantee badge and modal match
-  // Calculate score based on five criteria only (removed web verification)
-  let badgeOriginPoints =
-    scoreData.manufacturingCountry &&
-    scoreData.manufacturingCountry !== "Unknown"
-      ? 1
-      : 0;
-
-  // Use the same transparency logic for consistency
+  // Initialize all scoring variables to avoid reference errors
+  let badgeOriginPoints = 0;
+  let badgeCertPoints = 0;
+  let badgeMaterialPoints = 0;
+  let badgeEndOfLifePoints = 0;
+  let badgeEnvPoints = 0;
   let badgeTransparencyPoints = 0;
-  const badgeSupplyChainDetails = generateSupplyChainDetails(scoreData.score);
-  if (badgeSupplyChainDetails.transparency === "High")
-    badgeTransparencyPoints = 1;
-  else if (badgeSupplyChainDetails.transparency === "Good")
-    badgeTransparencyPoints = 0.5; // Changed to 0.5 max for partial transparency
-  else if (badgeSupplyChainDetails.transparency === "Medium")
-    badgeTransparencyPoints = 0.5;
-  else if (badgeSupplyChainDetails.transparency === "Low")
-    badgeTransparencyPoints = 0.5; // Even low transparency gets partial credit
-  else badgeTransparencyPoints = 0;
 
-  // Each criterion is worth exactly 1 point max
-  let badgeCertPoints =
-    scoreData.explanation && /certificat/i.test(scoreData.explanation) ? 1 : 0;
+  // Use the sustainability score breakdown if available
+  if (scoreData.sustainabilityScoreData) {
+    const sustainabilityData = scoreData.sustainabilityScoreData;
 
-  let badgeMaterialPoints =
-    scoreData.explanation &&
-    /organic|recycled|sustainable|cotton|bamboo|hemp|linen|wool|biodegradable/i.test(
-      scoreData.explanation
-    )
-      ? 1
-      : 0;
+    // Get points from sustainability score data
+    badgeOriginPoints = sustainabilityData.originMentioned.score;
+    badgeCertPoints = sustainabilityData.certifications.score;
+    badgeMaterialPoints = sustainabilityData.sustainableMaterials.score;
+    badgeEndOfLifePoints = sustainabilityData.endOfLife.score;
+    badgeEnvPoints = sustainabilityData.environmentalImpact.score;
 
-  let badgeEnvPoints =
-    scoreData.explanation &&
-    /carbon|neutral|offset|water|zero waste|renewable|energy|eco/i.test(
-      scoreData.explanation
-    )
-      ? 1
-      : 0;
+    console.log(
+      "[DEBUG] Using sustainability score breakdown for badge",
+      JSON.stringify({
+        origin: badgeOriginPoints,
+        certifications: badgeCertPoints,
+        materials: badgeMaterialPoints,
+        endOfLife: badgeEndOfLifePoints,
+        environment: badgeEnvPoints,
+      })
+    );
 
-  // Calculate score without web verification - only 5 criteria count
-  let badgeCalculatedScore =
-    badgeOriginPoints +
-    badgeTransparencyPoints +
-    badgeCertPoints +
-    badgeMaterialPoints +
-    badgeEnvPoints;
+    // Log evidence for each criterion
+    if (badgeOriginPoints)
+      console.log(
+        "[BADGE] Origin evidence:",
+        sustainabilityData.originMentioned.evidence
+      );
+    if (badgeCertPoints)
+      console.log(
+        "[BADGE] Certification evidence:",
+        sustainabilityData.certifications.evidence
+      );
+    if (badgeMaterialPoints)
+      console.log(
+        "[BADGE] Material evidence:",
+        sustainabilityData.sustainableMaterials.evidence
+      );
+    if (badgeEndOfLifePoints)
+      console.log(
+        "[BADGE] End-of-Life evidence:",
+        sustainabilityData.endOfLife.evidence
+      );
+    if (badgeEnvPoints)
+      console.log(
+        "[BADGE] Environmental impact evidence:",
+        sustainabilityData.environmentalImpact.evidence
+      );
+  } else {
+    // Legacy fallback calculation
+    // Calculate score based on five criteria only (removed web verification)
+    badgeOriginPoints =
+      scoreData.manufacturingCountry &&
+      scoreData.manufacturingCountry !== "Unknown"
+        ? 1
+        : 0;
 
-  // Ensure score is within range 0-5
-  badgeCalculatedScore = Math.max(0, badgeCalculatedScore);
-  badgeCalculatedScore = Math.min(5, badgeCalculatedScore);
+    // Use the same transparency logic for consistency
+    const badgeSupplyChainDetails = generateSupplyChainDetails(scoreData.score);
+    if (badgeSupplyChainDetails.transparency === "High")
+      badgeTransparencyPoints = 1;
+    else if (badgeSupplyChainDetails.transparency === "Good")
+      badgeTransparencyPoints = 0.5; // Changed to 0.5 max for partial transparency
+    else if (badgeSupplyChainDetails.transparency === "Medium")
+      badgeTransparencyPoints = 0.5;
+    else if (badgeSupplyChainDetails.transparency === "Low")
+      badgeTransparencyPoints = 0.5; // Even low transparency gets partial credit
+    else badgeTransparencyPoints = 0;
 
-  // Round to nearest half-point for cleaner display
-  badgeCalculatedScore = Math.round(badgeCalculatedScore * 2) / 2;
+    // Each criterion is worth exactly 1 point max, with strict certification matching
+    badgeCertPoints =
+      scoreData.explanation &&
+      /GOTS|OEKO[\-\s]?TEX|FSC|B\s*Corp|B\s*Corporation|Fairtrade|Fair\s*Trade|USDA\s*Organic|Rainforest\s*Alliance|Cradle\s*to\s*Cradle|Energy\s*Star|LEED|Green\s*Seal|certified\s*organic|eco[\-\s]?cert|BlueSign|Ecolabel|EU\s*Flower|Nordic\s*Swan/i.test(
+        scoreData.explanation
+      )
+        ? 1
+        : 0;
+
+    // Strict material sustainability check
+    badgeMaterialPoints =
+      scoreData.explanation &&
+      /sustainable\s*material|recycled\s*(?:content|material|fabric|plastic|paper|glass|metal)|organic\s*(?:cotton|material|fabric|fiber)|bamboo\s*(?:fiber|material)|eco[\-\s]?friendly\s*material|biodegradable\s*material|renewable\s*(?:material|resource)|natural\s*(?:fiber|material)s?(?!\s*gas)|sustainable\s*(?:wood|timber|paper|material|cotton|fabric)|ethically\s*sourced\s*(?:material|ingredient)|plant[\-\s]based/i.test(
+        scoreData.explanation
+      )
+        ? 1
+        : 0;
+
+    // Strict environmental impact check
+    badgeEnvPoints =
+      scoreData.explanation &&
+      /carbon\s*(?:footprint|neutral|negative|offset)|(?:reduced|lower|less)\s*(?:water|energy)\s*(?:usage|consumption)|zero\s*(?:waste|emission)|(?:reduced|lower|less)\s*(?:CO2|carbon dioxide|greenhouse gas|GHG)|environmental\s*impact\s*(?:statement|assessment)|life\s*cycle\s*assessment|(?:water|energy)\s*saving|climate\s*(?:friendly|positive|impact)|(?:renewable|green|clean)\s*energy/i.test(
+        scoreData.explanation
+      )
+        ? 1
+        : 0;
+
+    // Calculate end of life points separately
+    badgeEndOfLifePoints =
+      scoreData.explanation &&
+      /recyclable|biodegradable|compostable|take[\-\s]back\s*(?:program|initiative)|return\s*(?:program|policy)\s*for\s*(?:recycling|disposal)|product\s*(?:can|may)\s*be\s*recycled|disposal\s*instructions|(?:made|designed)\s*to\s*be\s*(?:recycled|reused)|circular\s*(?:design|economy)|disassembly\s*instructions/i.test(
+        scoreData.explanation
+      )
+        ? 1
+        : 0;
+  }
+
+  // Always use sustainabilityScoreData.totalScore for both badge and modal
+  // Calculate the score based on exactly five criteria with no half points
+  let syncedScore = scoreData.sustainabilityScoreData
+    ? scoreData.sustainabilityScoreData.totalScore
+    : badgeOriginPoints +
+      badgeCertPoints +
+      badgeMaterialPoints +
+      badgeEndOfLifePoints +
+      badgeEnvPoints;
+
+  // Ensure score is within range 0-5, no half points
+  syncedScore = Math.max(0, Math.min(5, Math.floor(syncedScore)));
 
   // Log detailed score calculation for badge
-  console.log(`Badge sustainability score calculation:
-    - Origin Information: ${badgeOriginPoints} point(s)
-    - Supply Chain Transparency: ${badgeTransparencyPoints} point(s)
+  console.log(`Badge sustainability score calculation (synced):
+    - Origin Mentioned: ${badgeOriginPoints} point(s)
     - Certifications: ${badgeCertPoints} point(s)
-    - Material Sourcing: ${badgeMaterialPoints} point(s)
-    - Environmental Practices: ${badgeEnvPoints} point(s)
-    = Total: ${badgeCalculatedScore}/5
+    - Sustainable Materials: ${badgeMaterialPoints} point(s)
+    - End-of-Life: ${badgeEndOfLifePoints} point(s)
+    - Environmental Impact: ${badgeEnvPoints} point(s)
+    = Total: ${syncedScore}/5
   `);
 
-  // Update the scoreData object with our calculated score
-  scoreData.calculatedScore = badgeCalculatedScore;
-  scoreData.score = badgeCalculatedScore;
-  scoreData.icons = getRatingIcons(Math.round(scoreData.score));
+  // Update the scoreData object with our synced score
+  scoreData.calculatedScore = syncedScore;
+  scoreData.score = syncedScore;
+  scoreData.icons = getRatingIcons(Math.round(syncedScore));
 
   // Create badge element
   const badge = document.createElement("div");
@@ -1374,8 +1581,9 @@ function insertSupplyChainBadge(priceElement, scoreData) {
   details.className = "supply-chain-details";
   details.style.display = "none";
 
-  // Generate details - use AI explanation if available, otherwise use generated details
-  const supplyChainDetails = generateSupplyChainDetails(scoreData.score);
+  // Use the synced score for modal details (always from badge)
+  const modalScore = scoreData.calculatedScore;
+  const supplyChainDetails = generateSupplyChainDetails(modalScore);
 
   // Get CO2 comparisons for context
   const co2Comparisons = getEmissionComparisons(
@@ -1396,554 +1604,65 @@ function insertSupplyChainBadge(priceElement, scoreData) {
     return truncated + "...";
   }
 
-  // --- NEW: Improved origin detection logic - AI-based without hardcoded countries ---
+  // --- STRICT: Only extract country of origin from explicit 'Country of origin:' keyword ---
+  // --- ROBUST: Extract manufacturing country using regex for all popular scenarios ---
   if (
     !scoreData.manufacturingCountry ||
     scoreData.manufacturingCountry === "Unknown" ||
     scoreData.manufacturingCountry === null
   ) {
-    // Try to extract "Made in <Country>" from product description
-    let madeInMatch = null;
     if (scoreData.explanation) {
-      // Extract country from product description using keyword search and regex
-      console.log(
-        "[DEBUG] Analyzing explanation text for country mentions:",
-        scoreData.explanation.substring(0, 200) + "..."
-      );
-
-      // Enhanced keyword-based search for country of origin
-      const keywordPatterns = [
-        /country of origin[:\s]*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i,
-        /made in[:\s]*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i,
-        /manufactured in[:\s]*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i,
-        /origin of the product[:\s]*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i,
-        /origin:\s*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i,
-        /country:\s*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i,
+      let countryName = "Unknown";
+      // Split into lines for more accurate matching
+      const lines = scoreData.explanation.split(/\r?\n/);
+      // Key phrases to match
+      const keyPhrases = [
+        "made in",
+        "country of origin",
+        "manufactured in",
+        "produced in",
+        "origin:",
+        "product of",
+        "manufacturing country",
+        "manufactured by",
       ];
-
-      console.log(
-        "[DEBUG] Searching for country patterns in:",
-        scoreData.explanation.substring(0, 300)
-      );
-
-      for (const pattern of keywordPatterns) {
-        console.log("[DEBUG] Testing pattern:", pattern);
-        madeInMatch = scoreData.explanation.match(pattern);
-        if (madeInMatch && madeInMatch[1]) {
-          console.log(
-            "[DEBUG] Pattern matched:",
-            pattern,
-            "with result:",
-            madeInMatch[1]
-          );
-          break;
-        }
-      }
-
-      // Fallback to previous regexes if no keyword match
-      if (!madeInMatch || !madeInMatch[1]) {
-        const madeInPattern =
-          /(?:made in|manufactured in|produced in|assembled in|sourced from|origin[s]?:?\s+)[:\s]*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i;
-        madeInMatch = scoreData.explanation.match(madeInPattern);
-        console.log("[DEBUG] Trying made-in pattern:", madeInPattern);
-        if (madeInMatch && madeInMatch[1]) {
-          console.log("[DEBUG] Made-in pattern match:", madeInMatch[1]);
-        }
-      }
-
-      if (!madeInMatch || !madeInMatch[1]) {
-        // Enhanced country pattern to specifically catch "Country of Origin: China" format
-        const countryPattern =
-          /\b(?:country|location|facility|factory)[\s\-:]+(?:of|is|in|origin)?[\s\-:]*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i;
-        console.log("[DEBUG] Trying country pattern:", countryPattern);
-        madeInMatch = scoreData.explanation.match(countryPattern);
-        if (madeInMatch && madeInMatch[1]) {
-          console.log("[DEBUG] Country pattern match:", madeInMatch[1]);
-        } else {
-          console.log("[DEBUG] No country pattern match found");
-        }
-      }
-      // PRIORITY: Try a direct pattern specifically for "Country of Origin: China" format - THIS IS THE MOST RELIABLE METHOD
-      if (!madeInMatch || !madeInMatch[1]) {
-        console.log(
-          "[DEBUG] Trying enhanced country of origin detection methods"
-        );
-
-        // First, check if the string "Country of Origin" exists anywhere
-        if (/country\s+of\s+origin/i.test(scoreData.explanation)) {
-          console.log(
-            "[DEBUG] Found 'Country of Origin' text in the description"
-          );
-
-          // Try multiple pattern variations to catch different formats
-          const directPatterns = [
-            // Pattern 1: Colon or equals format - "Country of Origin: China" or "Country of Origin = China"
-            /country\s+of\s+origin\s*[:=]\s*([\w\s\-']{2,}?)(?:\.|,|;|\s|$)/i,
-
-            // Pattern 2: "is" format - "Country of Origin is China"
-            /country\s+of\s+origin\s+is\s+([\w\s\-']{2,}?)(?:\.|,|;|\s|$)/i,
-
-            // Pattern 3: Implicit format - "Country of Origin China"
-            /country\s+of\s+origin\s+([\w\s\-']{2,}?)(?:\.|,|;|\s|$)/i,
-          ];
-
-          // Try each pattern in succession
-          for (const pattern of directPatterns) {
-            console.log("[DEBUG] Trying country pattern:", pattern);
-            const match = scoreData.explanation.match(pattern);
-
-            if (match && match[1]) {
-              const countryName = match[1].trim();
-              console.log("[DEBUG] Country pattern match found:", countryName);
-
-              // Validate that this is actually a country name and not part of a phrase
-              if (
-                countryName.length >= 2 &&
-                !/unknown|n\/a|not specified|country|origin|made|manufactured|shipped/i.test(
-                  countryName
-                )
-              ) {
-                madeInMatch = match;
-                console.log("[DEBUG] Valid country name found:", countryName);
-                break;
-              } else {
-                console.log(
-                  "[DEBUG] Rejected invalid country name:",
-                  countryName
-                );
-              }
-            }
-          }
-
-          // If still no match, try line-by-line approach
-          if (!madeInMatch || !madeInMatch[1]) {
-            console.log(
-              "[DEBUG] Trying line-by-line search for Country of Origin"
-            );
-            const lines = scoreData.explanation.split(/[\n\r]/);
-
-            for (const line of lines) {
-              if (/country\s+of\s+origin/i.test(line)) {
-                console.log("[DEBUG] Found line with Country of Origin:", line);
-
-                // Try multiple extraction patterns on this specific line
-                const linePatterns = [
-                  /country\s+of\s+origin\s*[:=]\s*([\w\s\-']{2,}?)(?:\.|,|;|\s|$)/i,
-                  /country\s+of\s+origin\s+is\s+([\w\s\-']{2,}?)(?:\.|,|;|\s|$)/i,
-                  /country\s+of\s+origin\s+([\w\s\-']{2,}?)(?:\.|,|;|\s|$)/i,
-                ];
-
-                for (const pattern of linePatterns) {
-                  const countryMatch = line.match(pattern);
-                  if (countryMatch && countryMatch[1]) {
-                    const countryName = countryMatch[1].trim();
-                    console.log(
-                      "[DEBUG] Extracted country from line:",
-                      countryName
-                    );
-
-                    if (
-                      countryName.length >= 2 &&
-                      !/unknown|n\/a|not specified|country|origin|made|manufactured|shipped/i.test(
-                        countryName
-                      )
-                    ) {
-                      madeInMatch = countryMatch;
-                      console.log(
-                        "[DEBUG] Valid country from line found:",
-                        countryName
-                      );
-                      break;
-                    } else {
-                      console.log(
-                        "[DEBUG] Rejected invalid country from line:",
-                        countryName
-                      );
-                    }
-                  }
-                }
-
-                // If we found a match, break out of the line loop
-                if (madeInMatch && madeInMatch[1]) break;
-              }
-            }
-          }
-        } else {
-          // If "Country of Origin" isn't found, try with other common patterns
-          const alternativePatterns = [
-            /origin\s+country\s*[:=]\s*([\w\s\-']{2,}?)(?:\.|,|;|\s|$)/i,
-            /origin\s*[:=]\s*([\w\s\-']{2,}?)(?:\.|,|;|\s|$)/i,
-            /place\s+of\s+origin\s*[:=]\s*([\w\s\-']{2,}?)(?:\.|,|;|\s|$)/i,
-          ];
-
-          for (const pattern of alternativePatterns) {
-            console.log("[DEBUG] Trying alternative pattern:", pattern);
-            const match = scoreData.explanation.match(pattern);
-
-            if (match && match[1]) {
-              const countryName = match[1].trim();
+      for (const line of lines) {
+        const lowerLine = line.toLowerCase();
+        for (const phrase of keyPhrases) {
+          const idx = lowerLine.indexOf(phrase);
+          if (idx !== -1) {
+            // Extract after the phrase
+            let afterPhrase = line.substring(idx + phrase.length).trim();
+            // Remove leading punctuation and spaces
+            afterPhrase = afterPhrase.replace(/^[:\-–=\s]+/, "").trim();
+            // Only take the first word/group before a comma or period
+            let candidate = afterPhrase.split(/[.,;\n]/)[0].trim();
+            // Remove trailing punctuation and extra spaces
+            candidate = candidate.replace(/[.,;:\s]+$/, "").trim();
+            // Only accept if it's a plausible country name
+            if (
+              candidate.length >= 2 &&
+              candidate.length <= 30 &&
+              /^[A-Za-z\s\-']+$/.test(candidate) &&
+              !/manufacturing|location|country|origin|made|from|produced|or|the|information|where|details|instructions|search|examine|description|text|above|below|find|mention|phrases|product|refer|listed|unknown|n\/a|not/i.test(
+                candidate
+              )
+            ) {
+              countryName = candidate;
               console.log(
-                "[DEBUG] Alternative pattern match found:",
-                countryName
+                `[DEBUG] Manufacturing country detected: '${countryName}' from line: '${line}' using phrase: '${phrase}'`
               );
-
-              if (
-                countryName.length >= 2 &&
-                !/unknown|n\/a|not specified|country|origin|made|manufactured|shipped/i.test(
-                  countryName
-                )
-              ) {
-                madeInMatch = match;
-                console.log(
-                  "[DEBUG] Valid country from alternative pattern:",
-                  countryName
-                );
-                break;
-              } else {
-                console.log(
-                  "[DEBUG] Rejected invalid country from alternative pattern:",
-                  countryName
-                );
-              }
+              break;
             }
           }
         }
+        if (countryName !== "Unknown") break;
       }
-
-      // Last fallback to preposition pattern
-      if (!madeInMatch || !madeInMatch[1]) {
-        const prepositionPattern =
-          /(?:from|in|by)\s+([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i;
-        console.log("[DEBUG] Trying preposition pattern:", prepositionPattern);
-        madeInMatch = scoreData.explanation.match(prepositionPattern);
-        if (madeInMatch && madeInMatch[1]) {
-          console.log("[DEBUG] Preposition pattern match:", madeInMatch[1]);
-        } else {
-          console.log("[DEBUG] No preposition pattern match found");
-        }
-      }
-
-      // If no match found yet, try a last desperate attempt to find structured key-value pairs
-      if (!madeInMatch || !madeInMatch[1]) {
-        console.log(
-          "[DEBUG] Trying a structured text search for key-value pairs"
-        );
-
-        // Look for lines with a clear key-value structure like "Country of Origin: China"
-        const lines = scoreData.explanation.split(/[\n\r]+/);
-        for (const line of lines) {
-          // Check for key-value pairs with colons - this is critical for product info sections
-          if (
-            /country|origin|made|manufactured|from|produced/i.test(line) &&
-            line.includes(":")
-          ) {
-            console.log("[DEBUG] Found potential key-value line:", line);
-
-            // First try to process exact key-value formats
-            const keyValueMatches = [
-              // Try explicit regex pattern first for more accuracy
-              line.match(
-                /(?:country\s+of\s+origin|origin\s+country|place\s+of\s+origin)\s*:\s*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i
-              ),
-
-              // Then try the parts splitting approach as fallback
-              null,
-            ];
-
-            // If regex didn't match, try parts splitting
-            if (!keyValueMatches[0]) {
-              const parts = line.split(":");
-              if (
-                parts.length >= 2 &&
-                /country|origin|manufactured in|made in/i.test(parts[0])
-              ) {
-                // This is our fallback approach
-                keyValueMatches[1] = [null, parts[1].trim()];
-              }
-            }
-
-            // Process whichever match we got
-            for (const keyValueMatch of keyValueMatches) {
-              if (keyValueMatch && keyValueMatch[1]) {
-                const value = keyValueMatch[1].trim();
-
-                // More extensive validation of the extracted value
-                if (
-                  value.length >= 2 &&
-                  !/unknown|n\/a|not specified|not listed|information|country|origin|product|manufactured|made|location/i.test(
-                    value
-                  ) &&
-                  value.length < 30 // Country names shouldn't be too long
-                ) {
-                  console.log(
-                    "[DEBUG] Extracted country from key-value pair:",
-                    value
-                  );
-                  madeInMatch = [null, value];
-                  break;
-                } else {
-                  console.log(
-                    "[DEBUG] Rejected invalid key-value pair result:",
-                    value
-                  );
-                }
-              }
-            }
-
-            // Break out if we found a valid match
-            if (madeInMatch && madeInMatch[1]) break;
-          }
-        }
-      }
-
-      if (madeInMatch && madeInMatch[1]) {
-        let countryName = madeInMatch[1].trim();
-        // Clean up country name - remove trailing punctuation and extra spaces
-        countryName = countryName.replace(/[.,;:\s]+$/, "").trim();
-        console.log("[DEBUG] Raw country name before validation:", countryName);
-
-        // More extensive validation to ensure we only get actual country names
-        // First check for prompt phrases and instructions
-        if (
-          /or manufacturing location|country of origin|manufacturing country|manufactured in|produced in|from|origin|information|location|details|specs|unknown|n\/a|listed|provided|below|above/i.test(
-            countryName
-          )
-        ) {
-          console.log(
-            "[DEBUG] Found match but rejected as it contains prompt instructions or placeholders:",
-            countryName
-          );
-          madeInMatch = null;
-        }
-        // Filter out too short or likely non-country words or extremely long phrases
-        else if (
-          countryName.length < 3 ||
-          countryName.length > 30 ||
-          /the|and|our|their|this|that|these|those|where|what|which|please|see|check|view|information|not available/i.test(
-            countryName
-          )
-        ) {
-          console.log(
-            "[DEBUG] Found match but rejected as not a valid country name:",
-            countryName
-          );
-          madeInMatch = null;
-        }
-        // Check for partial matches that might be part of a longer phrase
-        else if (
-          /^(of|in|is|by|at|to|for)$/i.test(countryName) ||
-          /product|item|article|imported|exported|listed|shown|displayed/i.test(
-            countryName
-          )
-        ) {
-          console.log(
-            "[DEBUG] Found match but rejected as it's likely part of a phrase:",
-            countryName
-          );
-          madeInMatch = null;
-        } else {
-          console.log(
-            "[DEBUG] Found country match in description:",
-            countryName
-          );
-          // Store the cleaned country name
-          madeInMatch[1] = countryName;
-        }
-      } else {
-        console.log(
-          "[DEBUG] No country match found in product description after all attempts"
-        );
-      }
-    } else {
-      console.log(
-        "[DEBUG] No explanation text available to extract country from"
-      );
-    }
-
-    if (madeInMatch && madeInMatch[1]) {
-      // Found made in country in product description (robust)
-      const countryName = madeInMatch[1].trim();
-
-      // Final validation before setting the country name
-      if (
-        countryName.length >= 2 &&
-        countryName.length <= 30 &&
-        !/manufacturing|location|country|origin|made|from|produced|or|the|information|where|details|instructions|search|examine|description|text|above|below|find|mention|phrases|product|refer|listed|unknown|n\/a|not/i.test(
-          countryName
-        )
-      ) {
-        console.log("[DEBUG] Setting valid country name:", countryName);
-        scoreData.manufacturingCountry = countryName;
-      } else {
-        console.log("[DEBUG] Rejecting invalid country name:", countryName);
-        scoreData.manufacturingCountry = "Unknown";
-      }
-
-      // Try to get user's country from website (shipping location)
-      let userCountry = null;
-      // Try to get from common selectors or fallback to browser language
-      const countrySelectors = [
-        "[data-shipping-country]",
-        "#shippingCountry",
-        ".shipping-country",
-        'select[name="country"]',
-        'input[name="country"]',
-        ".locale-country",
-      ];
-      for (const selector of countrySelectors) {
-        const el = document.querySelector(selector);
-        if (el) {
-          if (el.value) userCountry = el.value;
-          else if (el.textContent) userCountry = el.textContent.trim();
-          if (userCountry) break;
-        }
-      }
-      if (!userCountry && navigator.language) {
-        // Fallback: use browser language country
-        const lang = navigator.language.split("-");
-        if (lang.length > 1) userCountry = lang[1];
-      }
-      // Calculate CO2 emissions based on made in country and user country (if available)
+      scoreData.manufacturingCountry = countryName;
+      // Calculate CO2 emissions based on made in country
       scoreData.co2Emissions = calculateCO2Emissions(
         scoreData.manufacturingCountry
       );
-      scoreData.userCountry = userCountry || null;
-    } else {
-      // No made in info in description, try to get brand origin from web search
-      let productBrand = scoreData.productBrand;
-      if (!productBrand) {
-        const brandSelectors = [
-          ".brand",
-          ".product-brand",
-          '[itemprop="brand"]',
-          "[data-brand]",
-          ".a-brand",
-          "#bylineInfo",
-          ".brand-name",
-          ".productMeta-brand",
-          ".product-meta__vendor",
-          ".product-vendor",
-          ".manufacturer",
-          '[data-testid="brand-name"]',
-          '[data-test="brand-name"]',
-        ];
-        for (const selector of brandSelectors) {
-          const el = document.querySelector(selector);
-          if (el && el.textContent.trim().length > 0) {
-            productBrand = el.textContent.trim();
-            break;
-          }
-        }
-        // Fallback: try meta tag
-        if (!productBrand) {
-          const metaBrand = document.querySelector(
-            'meta[name="brand"], meta[property="og:brand"]'
-          );
-          if (metaBrand && metaBrand.content) {
-            productBrand = metaBrand.content.trim();
-          }
-        }
-      }
-      let productTitle =
-        document.querySelector(".supply-chain-badge-title")?.textContent ||
-        document.title;
-      // Try queries specifically focused on manufacturing origin information - rely on AI for analysis
-      const queries = productBrand
-        ? [
-            `${productBrand} where are they manufactured country of origin`,
-            `${productBrand} products where are they made manufacturing country`,
-            `${productBrand} factory location manufacturing country`,
-            `${productBrand} made in which country`,
-            `where are ${productBrand} products manufactured country`,
-          ]
-        : [
-            `${productTitle} where is it manufactured country of origin`,
-            `${productTitle} where is it produced manufacturing country`,
-            `${productTitle} made in which country factory location`,
-            `${productTitle} manufacturing location country of origin`,
-            `${productTitle} production country factory`,
-          ];
-      (async () => {
-        let found = false;
-        for (const searchQuery of queries) {
-          const webSummary = await fetchSustainabilityWebSummary(
-            searchQuery,
-            ""
-          );
-          console.log("[DEBUG] Brand origin search query:", searchQuery);
-          console.log(
-            "[DEBUG] Web summary for brand origin search:",
-            webSummary
-          );
-          // Filter out unrelated results (tourism, travel, destination)
-          if (
-            webSummary &&
-            !/tourism|travel|destination|holiday|trip|tourist/i.test(webSummary)
-          ) {
-            // Use Groq AI to analyze the web search results for the most likely country
-            const aiResult = await analyzeWithGroq(searchQuery, webSummary, "");
-            console.log("[DEBUG] Groq AI result for brand origin:", aiResult);
-
-            if (aiResult && aiResult.manufacturingCountry) {
-              const extractedCountry = aiResult.manufacturingCountry.trim();
-
-              // Validate that we have a reasonable country name (not just "N/A" or too short)
-              if (
-                extractedCountry.length >= 3 &&
-                !/unknown|n\/a|not specified|no information|unavailable/i.test(
-                  extractedCountry
-                )
-              ) {
-                console.log(
-                  "[DEBUG] Groq AI extracted valid manufacturingCountry:",
-                  extractedCountry
-                );
-
-                // Store the valid country
-                scoreData.manufacturingCountry = extractedCountry;
-                scoreData.brandOriginCountry = extractedCountry;
-
-                // Log origin source for debugging
-                console.log(
-                  "[DEBUG] Manufacturing country source: AI web analysis"
-                );
-                found = true;
-                break;
-              } else {
-                console.log(
-                  "[DEBUG] Groq AI returned invalid country:",
-                  extractedCountry
-                );
-              }
-            } else {
-              // If Groq AI didn't extract a manufacturing country, provide detailed debugging
-              console.log(
-                "[DEBUG] No manufacturing country was found by Groq AI for query:",
-                searchQuery
-              );
-
-              // Check if explanation has any country-like mentions that might have been missed
-              if (aiResult && aiResult.explanation) {
-                const countryPattern =
-                  /\b(?:made in|manufactured in|produced in|from|country|origin)\s+([A-Za-z\s\-\']{2,})(?:\.|\,|\s|$)/i;
-                const explanationMatch =
-                  aiResult.explanation.match(countryPattern);
-                if (explanationMatch && explanationMatch[1]) {
-                  console.log(
-                    "[DEBUG] Possible missed country in AI explanation:",
-                    explanationMatch[1]
-                  );
-                }
-              }
-            }
-          }
-        }
-        if (!found) {
-          console.log(
-            "[DEBUG] No relevant brand origin country found after trying all queries."
-          );
-        }
-      })();
     }
   }
 
@@ -1965,13 +1684,18 @@ function insertSupplyChainBadge(priceElement, scoreData) {
   else if (supplyChainDetails.transparency === "Low") transparencyPoints = 0.5;
   else transparencyPoints = 0;
 
-  // Each criterion is worth exactly 1 point max
+  // Each criterion is worth exactly 1 point max, using strict matches
   let certPoints =
-    scoreData.explanation && /certificat/i.test(scoreData.explanation) ? 1 : 0;
+    scoreData.explanation &&
+    /GOTS|OEKO[\-\s]?TEX|FSC|B\s*Corp|B\s*Corporation|Fairtrade|Fair\s*Trade|USDA\s*Organic|Rainforest\s*Alliance|Cradle\s*to\s*Cradle|Energy\s*Star|LEED|Green\s*Seal|certified\s*organic|eco[\-\s]?cert|BlueSign|Ecolabel|EU\s*Flower|Nordic\s*Swan/i.test(
+      scoreData.explanation
+    )
+      ? 1
+      : 0;
 
   let materialPoints =
     scoreData.explanation &&
-    /organic|recycled|sustainable|cotton|bamboo|hemp|linen|wool|biodegradable/i.test(
+    /sustainable\s*material|recycled\s*(?:content|material|fabric|plastic|paper|glass|metal)|organic\s*(?:cotton|material|fabric|fiber)|bamboo\s*(?:fiber|material)|eco[\-\s]?friendly\s*material|biodegradable\s*material|renewable\s*(?:material|resource)|natural\s*(?:fiber|material)s?(?!\s*gas)|sustainable\s*(?:wood|timber|paper|material|cotton|fabric)|ethically\s*sourced\s*(?:material|ingredient)|plant[\-\s]based/i.test(
       scoreData.explanation
     )
       ? 1
@@ -1979,7 +1703,7 @@ function insertSupplyChainBadge(priceElement, scoreData) {
 
   let envPoints =
     scoreData.explanation &&
-    /carbon|neutral|offset|water|zero waste|renewable|energy|eco/i.test(
+    /carbon\s*(?:footprint|neutral|negative|offset)|(?:reduced|lower|less)\s*(?:water|energy)\s*(?:usage|consumption)|zero\s*(?:waste|emission)|(?:reduced|lower|less)\s*(?:CO2|carbon dioxide|greenhouse gas|GHG)|environmental\s*impact\s*(?:statement|assessment)|life\s*cycle\s*assessment|(?:water|energy)\s*saving|climate\s*(?:friendly|positive|impact)|(?:renewable|green|clean)\s*energy/i.test(
       scoreData.explanation
     )
       ? 1
@@ -1999,15 +1723,16 @@ function insertSupplyChainBadge(priceElement, scoreData) {
 
   // ROBUSTLY RECALCULATE TOTAL SCORE based only on the 5 criteria
   // Sum all points from each category (excluding web verification)
+  // Calculate score based on exactly five criteria, each worth exactly 1 point
   let calculatedScore =
-    originPoints + transparencyPoints + certPoints + materialPoints + envPoints;
+    originPoints +
+    certPoints +
+    materialPoints +
+    badgeEndOfLifePoints +
+    envPoints;
 
-  // Ensure score is within range 0-5
-  calculatedScore = Math.max(0, calculatedScore);
-  calculatedScore = Math.min(5, calculatedScore);
-
-  // Round to nearest half-point for cleaner display
-  calculatedScore = Math.round(calculatedScore * 2) / 2;
+  // Ensure score is within range 0-5, no half points
+  calculatedScore = Math.max(0, Math.min(5, Math.floor(calculatedScore)));
 
   // Log detailed score calculation
   console.log(`Modal sustainability score calculation:
@@ -2066,59 +1791,69 @@ function insertSupplyChainBadge(priceElement, scoreData) {
     <div class="supply-chain-summary-box">
       <div class="score-breakdown">
         <h4 style="margin-bottom: 8px;">How this score is calculated:</h4>
-        
         <ul style="list-style: disc inside; margin:0; padding-left: 18px;">
-          <li><b>Origin Information</b> (${originPoints} point${
-    originPoints !== 1 ? "s" : ""
-  }):
-            <span>${
-              scoreData.manufacturingCountry &&
-              scoreData.manufacturingCountry !== "Unknown"
-                ? `Manufactured in <b>${scoreData.manufacturingCountry}</b>`
-                : scoreData.brandOriginCountry
-                ? `⚠️ The brand seems to be originated from <b>${scoreData.brandOriginCountry}</b>`
-                : "⚠️ No manufacturing origin information available"
-            }</span>
+          <li><b>Origin Mentioned</b> (${originPoints} point):
+            <span>
+              ${
+                scoreData.manufacturingCountry &&
+                scoreData.manufacturingCountry !== "Unknown"
+                  ? `Manufacturing country detected after key phrases: <b>${scoreData.manufacturingCountry}</b>`
+                  : "No manufacturing origin information found after key phrases"
+              }
+            </span>
           </li>
-          <li><b>Supply Chain Transparency</b> (${transparencyPoints} point${
-    transparencyPoints !== 1 ? "s" : ""
-  }):
-            <span>${supplyChainDetails.transparencyExplanation}</span>
+          <li><b>Certifications</b> (${certPoints} point):
+            <span>
+              ${
+                scoreData.explanation &&
+                /GOTS|OEKO[\-\s]?TEX|FSC|B\s*Corp|B\s*Corporation|Fairtrade|Fair\s*Trade|USDA\s*Organic|Rainforest\s*Alliance|Cradle\s*to\s*Cradle|Energy\s*Star|LEED|Green\s*Seal|certified\s*organic|eco[\-\s]?cert|BlueSign|Ecolabel|EU\s*Flower|Nordic\s*Swan/i.test(
+                  scoreData.explanation
+                )
+                  ? "Certification keywords detected"
+                  : "No certifications found"
+              }
+            </span>
           </li>
-          <li><b>Certifications</b> (${certPoints} point${
-    certPoints !== 1 ? "s" : ""
-  }):
-            <span>${
-              scoreData.explanation && /certificat/i.test(scoreData.explanation)
-                ? "Certifications mentioned"
-                : "No certifications found"
-            }</span>
+          <li><b>Sustainable Materials</b> (${materialPoints} point):
+            <span>
+              ${
+                scoreData.explanation &&
+                /sustainable\s*material|recycled\s*(?:content|material|fabric|plastic|paper|glass|metal)|organic\s*(?:cotton|material|fabric|fiber)|bamboo\s*(?:fiber|material)|eco[\-\s]?friendly\s*material|biodegradable\s*material|renewable\s*(?:material|resource)|natural\s*(?:fiber|material)s?(?!\s*gas)|sustainable\s*(?:wood|timber|paper|material|cotton|fabric)|ethically\s*sourced\s*(?:material|ingredient)|plant[\-\s]based/i.test(
+                  scoreData.explanation
+                )
+                  ? materialPoints === 1
+                    ? "Sustainable, recycled, organic, or eco-friendly materials detected"
+                    : "No clear sustainable materials found"
+                  : "No clear sustainable materials found"
+              }
+            </span>
           </li>
-          <li><b>Material Sourcing</b> (${materialPoints} point${
-    materialPoints !== 1 ? "s" : ""
-  }):
-            <span>${
-              scoreData.explanation &&
-              /organic|recycled|sustainable|cotton|bamboo|hemp|linen|wool|biodegradable/i.test(
-                scoreData.explanation
-              )
-                ? "Sustainable/organic/recycled materials detected"
-                : "No clear sustainable materials"
-            }</span>
+          <li><b>End-of-Life</b> (${badgeEndOfLifePoints} point):
+            <span>
+              ${
+                scoreData.explanation &&
+                /recyclable|biodegradable|compostable|take[\-\s]back\s*(?:program|initiative)|return\s*(?:program|policy)\s*for\s*(?:recycling|disposal)|product\s*(?:can|may)\s*be\s*recycled|disposal\s*instructions|(?:made|designed)\s*to\s*be\s*(?:recycled|reused)|circular\s*(?:design|economy)|disassembly\s*instructions/i.test(
+                  scoreData.explanation
+                )
+                  ? "End-of-life options (recyclability, biodegradability, return/take-back programs) detected"
+                  : "No end-of-life information found"
+              }
+            </span>
           </li>
-          <li><b>Environmental Practices</b> (${envPoints} point${
-    envPoints !== 1 ? "s" : ""
-  }):
-            <span>${
-              scoreData.explanation &&
-              /carbon|neutral|offset|water|zero waste|renewable|energy|eco/i.test(
-                scoreData.explanation
-              )
-                ? "Environmental practices mentioned"
-                : "No environmental practices found"
-            }</span>
+          <li><b>Environmental Impact Disclosure</b> (${envPoints} point):
+            <span>
+              ${
+                scoreData.explanation &&
+                /carbon\s*(?:footprint|neutral|negative|offset)|(?:reduced|lower|less)\s*(?:water|energy)\s*(?:usage|consumption)|zero\s*(?:waste|emission)|(?:reduced|lower|less)\s*(?:CO2|carbon dioxide|greenhouse gas|GHG)|environmental\s*impact\s*(?:statement|assessment)|life\s*cycle\s*assessment|(?:water|energy)\s*saving|climate\s*(?:friendly|positive|impact)|(?:renewable|green|clean)\s*energy/i.test(
+                  scoreData.explanation
+                )
+                  ? envPoints === 1
+                    ? "Measurable environmental impact mentions detected (carbon footprint, water use, pollution reduction, offsets)"
+                    : "No environmental impact disclosure found"
+                  : "No environmental impact disclosure found"
+              }
+            </span>
           </li>
-
         </ul>
       </div>
       ${
@@ -2170,9 +1905,6 @@ function insertSupplyChainBadge(priceElement, scoreData) {
         ? `
       <div class="supply-chain-origin">
         <h4>Manufacturing Origin</h4>
-        <p style="font-weight: bold; font-size: 1.2em; color: #2e7d32; text-transform: uppercase;">${
-          // Enhanced final validation to ensure we display ONLY a clean country name
-          scoreData.manufacturingCountry &&
           scoreData.manufacturingCountry.length >= 2 &&
           scoreData.manufacturingCountry.length <= 30 &&
           !/manufacturing|location|country|origin|made|from|produced|or|the|information|where|details|instructions|search|examine|description|text|above|below|find|mention|phrases|product|refer|listed|unknown|n\/a|not/i.test(
