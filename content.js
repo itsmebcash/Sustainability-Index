@@ -92,10 +92,37 @@ async function fetchSustainabilityWebSummary(title, brand = "") {
     const data = await response.json();
     // Summarize top results (titles + snippets)
     if (data && data.results && Array.isArray(data.results)) {
+      // Look specifically for country mentions in web results to assist with origin detection
+      let countryMentionsFound = false;
       const summary = data.results
         .slice(0, 5)
-        .map((r) => `- ${r.title}: ${r.snippet}`)
+        .map((r) => {
+          // Check if any result mentions "made in" or country of origin
+          const hasOriginInfo =
+            /made in|manufactured in|country of origin|factory|manufacturing location/i.test(
+              r.title
+            ) ||
+            /made in|manufactured in|country of origin|factory|manufacturing location/i.test(
+              r.snippet
+            );
+          if (hasOriginInfo) {
+            countryMentionsFound = true;
+            return `- [ORIGIN INFO] ${r.title}: ${r.snippet}`;
+          }
+          return `- ${r.title}: ${r.snippet}`;
+        })
         .join("\n");
+
+      if (countryMentionsFound) {
+        console.log(
+          "[DEBUG] Web search found potential manufacturing origin information"
+        );
+      } else {
+        console.log(
+          "[DEBUG] Web search did not find explicit manufacturing origin information"
+        );
+      }
+
       return summary || "No relevant web results found.";
     }
     return "No relevant web results found.";
@@ -139,13 +166,18 @@ async function analyzeWithGroq(title, description, webSummary = "") {
       "Use general sustainability criteria appropriate for this product type.";
   }
 
-  const prompt = `You are a sustainability expert evaluating a product's environmental impact. Analyze the product details and return a JSON object with the following fields:
+  const prompt = `You are a sustainability expert evaluating a product's environmental impact. YOUR ABSOLUTE PRIORITY TASK IS TO EXTRACT THE COUNTRY OF ORIGIN OR MANUFACTURING COUNTRY from the product information. 
+
+IMPORTANT: First scan the entire text for phrases like "Country of Origin: China" or "Made in Japan" or any indication of where the product was manufactured. This is your most important task.
+
+Return a JSON object with the following fields:
+
+- manufacturingCountry (CRITICAL PRIORITY: Return ONLY THE ACTUAL COUNTRY NAME (like "China", "USA", "Germany", etc.) and not descriptive phrases. Thoroughly examine the text for ANY mention of "country of origin", "manufacturing location", "made in", "from", "produced in", "manufactured in", etc. Pay special attention to labeled sections like "Country of Origin: [country]". If you find ANY country name related to manufacturing, return ONLY that country name; if multiple countries mentioned, choose the main manufacturing location)
 - verifiedScore (0-100, integer, based on all info including web search)
 - score (0-5, integer, based on product info only)
-- manufacturingCountry (if found or can be inferred)
 - co2Emissions (if you can estimate, else null)
 - shippingMethod (guess if possible)
-- explanation (detailed rationale for your score)
+- explanation (detailed rationale for your score - IMPORTANT: include all information about manufacturing country in your explanation, repeat the exact text about country of origin if found)
 - productType (your assessment of what type of product this is)
 
 Product Title: ${title}
@@ -707,6 +739,7 @@ function detectProductPage() {
 
       // Common product description selectors - combine them all for better data
       const descriptionSelectors = [
+        // Existing selectors
         ".product-description",
         "#productDescription",
         "#feature-bullets",
@@ -727,6 +760,17 @@ function detectProductPage() {
         ".summary",
         ".specs",
         ".specifications",
+        // Amazon-specific expanded selectors
+        "#productDetails_detailBullets_sections1", // Product Details section (Amazon)
+        "#detailBullets_feature_div", // Product Details section (Amazon)
+        "#prodDetails", // Product Details section (Amazon)
+        "#additionalDetails_feature_div", // Additional Details section (Amazon)
+        "#aboutThisItem_feature_div", // About This Item section (Amazon)
+        ".about-this-item", // About This Item (Amazon)
+        "#productDescription_feature_div", // Product Description section (Amazon)
+        ".product-description-wrapper", // Product Description (Amazon)
+        ".additional-details", // Additional Details (Amazon)
+        ".product-details", // Product Details (Amazon)
       ];
 
       // Extract from all selectors and combine
@@ -736,6 +780,13 @@ function detectProductPage() {
           elements.forEach((element) => {
             const text = element.textContent.trim();
             if (text && text.length > 10) {
+              // Log if we find "Country of Origin" in the text for debugging
+              if (/country of origin|origin[:]/i.test(text)) {
+                console.log(
+                  "[DEBUG] Found potential country of origin text:",
+                  text
+                );
+              }
               productDescription += text + "\n\n";
             }
           });
@@ -776,6 +827,26 @@ SUSTAINABILITY CLAIMS:
 ${sustainabilityClaims}
       `.trim();
 
+      // Log product description for debugging purposes
+      console.log(
+        "[DEBUG] Enhanced description snippet:",
+        enhancedDescription.substring(0, 300) + "..."
+      );
+
+      // Check if the description contains 'country of origin' for debugging
+      if (/country of origin/i.test(enhancedDescription)) {
+        console.log(
+          "[DEBUG] Found 'country of origin' in the product description"
+        );
+        // Extract the line containing 'country of origin'
+        const lines = enhancedDescription.split(/[\n\r]+/);
+        for (const line of lines) {
+          if (/country of origin/i.test(line)) {
+            console.log("[DEBUG] Country of origin line:", line);
+          }
+        }
+      }
+
       // Fetch web search summary using both brand and title, then analyze with Groq AI
       fetchSustainabilityWebSummary(productTitle, productBrand)
         .then((webSummary) =>
@@ -783,9 +854,63 @@ ${sustainabilityClaims}
         )
         .then((aiScore) => {
           if (aiScore) {
+            // --- Country of origin override logic ---
+            const countryOfOriginMatch = productDescription.match(
+              /country of origin[:\s]*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i
+            );
+            if (countryOfOriginMatch && countryOfOriginMatch[1]) {
+              const country = countryOfOriginMatch[1].trim();
+              if (
+                country.length >= 2 &&
+                country.length <= 30 &&
+                !/unknown|n\/a|not specified|not available|unavailable/i.test(
+                  country
+                )
+              ) {
+                aiScore.manufacturingCountry = country;
+                console.log(
+                  "[DEBUG] Overriding AI country with explicit Country of origin:",
+                  country
+                );
+              }
+            }
+            // Debug the AI's country extraction before inserting badge
+            console.log(
+              "[DEBUG] AI analysis result:",
+              JSON.stringify({
+                manufacturingCountry: aiScore.manufacturingCountry,
+                explanation: aiScore.explanation
+                  ? aiScore.explanation.substring(0, 100) + "..."
+                  : "No explanation",
+                score: aiScore.score,
+              })
+            );
+            // Ensure manufacturingCountry is properly validated and cleaned
+            if (aiScore.manufacturingCountry) {
+              const country = aiScore.manufacturingCountry.trim();
+              const rejectedPhrases =
+                /manufacturing location|country of origin|manufacturing country|manufactured in|produced in|from|origin|or/i;
+              if (
+                country.length >= 3 &&
+                !/unknown|n\/a|not specified|not available|unavailable/i.test(
+                  country
+                ) &&
+                !rejectedPhrases.test(country)
+              ) {
+                console.log(
+                  "[DEBUG] Valid manufacturing country from AI:",
+                  country
+                );
+              } else {
+                console.log(
+                  "[DEBUG] AI returned invalid country or prompt instruction, setting to null:",
+                  country
+                );
+                aiScore.manufacturingCountry = null;
+              }
+            }
             insertSupplyChainBadge(priceElement, aiScore);
           } else {
-            // fallback: show N/A if AI fails
             insertSupplyChainBadge(priceElement, {
               score: null,
               verifiedScore: null,
@@ -798,7 +923,6 @@ ${sustainabilityClaims}
           }
         })
         .catch(() => {
-          // fallback: show N/A if AI fails
           insertSupplyChainBadge(priceElement, {
             score: null,
             verifiedScore: null,
@@ -1206,7 +1330,7 @@ function insertSupplyChainBadge(priceElement, scoreData) {
 
   // Badge revision: add title, keep score and leaf in one line, remove label text
   badge.innerHTML = `
-    <div class="supply-chain-badge-content sleek-badge" style="background: #fff; border-radius: 18px; box-shadow: 0 2px 12px 0 rgba(60,60,60,0.10); padding: 8px 18px 8px 14px; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 120px;">
+    <div class="supply-chain-badge-content sleek-badge" style="background: #fff; border-radius: 18px; box-shadow: 0 2px 8px 0 rgba(60,60,60,0.10); padding: 8px 18px 8px 14px; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 120px;">
       <span class="supply-chain-badge-title" style="font-size: 0.95em; font-weight: 600; color: #222; letter-spacing: 0.01em; margin-bottom: 2px;">Sustainability Score</span>
       <span style="display: flex; align-items: center; gap: 8px;">
         <span class="supply-chain-score" style="color: ${badgeColor}; font-size: 1.15em; font-weight: 700;">
@@ -1272,7 +1396,7 @@ function insertSupplyChainBadge(priceElement, scoreData) {
     return truncated + "...";
   }
 
-  // --- NEW: Improved origin detection logic ---
+  // --- NEW: Improved origin detection logic - AI-based without hardcoded countries ---
   if (
     !scoreData.manufacturingCountry ||
     scoreData.manufacturingCountry === "Unknown" ||
@@ -1281,11 +1405,380 @@ function insertSupplyChainBadge(priceElement, scoreData) {
     // Try to extract "Made in <Country>" from product description
     let madeInMatch = null;
     if (scoreData.explanation) {
-      madeInMatch = scoreData.explanation.match(/made in ([A-Za-z ]+)/i);
+      // Extract country from product description using keyword search and regex
+      console.log(
+        "[DEBUG] Analyzing explanation text for country mentions:",
+        scoreData.explanation.substring(0, 200) + "..."
+      );
+
+      // Enhanced keyword-based search for country of origin
+      const keywordPatterns = [
+        /country of origin[:\s]*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i,
+        /made in[:\s]*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i,
+        /manufactured in[:\s]*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i,
+        /origin of the product[:\s]*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i,
+        /origin:\s*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i,
+        /country:\s*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i,
+      ];
+
+      console.log(
+        "[DEBUG] Searching for country patterns in:",
+        scoreData.explanation.substring(0, 300)
+      );
+
+      for (const pattern of keywordPatterns) {
+        console.log("[DEBUG] Testing pattern:", pattern);
+        madeInMatch = scoreData.explanation.match(pattern);
+        if (madeInMatch && madeInMatch[1]) {
+          console.log(
+            "[DEBUG] Pattern matched:",
+            pattern,
+            "with result:",
+            madeInMatch[1]
+          );
+          break;
+        }
+      }
+
+      // Fallback to previous regexes if no keyword match
+      if (!madeInMatch || !madeInMatch[1]) {
+        const madeInPattern =
+          /(?:made in|manufactured in|produced in|assembled in|sourced from|origin[s]?:?\s+)[:\s]*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i;
+        madeInMatch = scoreData.explanation.match(madeInPattern);
+        console.log("[DEBUG] Trying made-in pattern:", madeInPattern);
+        if (madeInMatch && madeInMatch[1]) {
+          console.log("[DEBUG] Made-in pattern match:", madeInMatch[1]);
+        }
+      }
+
+      if (!madeInMatch || !madeInMatch[1]) {
+        // Enhanced country pattern to specifically catch "Country of Origin: China" format
+        const countryPattern =
+          /\b(?:country|location|facility|factory)[\s\-:]+(?:of|is|in|origin)?[\s\-:]*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i;
+        console.log("[DEBUG] Trying country pattern:", countryPattern);
+        madeInMatch = scoreData.explanation.match(countryPattern);
+        if (madeInMatch && madeInMatch[1]) {
+          console.log("[DEBUG] Country pattern match:", madeInMatch[1]);
+        } else {
+          console.log("[DEBUG] No country pattern match found");
+        }
+      }
+      // PRIORITY: Try a direct pattern specifically for "Country of Origin: China" format - THIS IS THE MOST RELIABLE METHOD
+      if (!madeInMatch || !madeInMatch[1]) {
+        console.log(
+          "[DEBUG] Trying enhanced country of origin detection methods"
+        );
+
+        // First, check if the string "Country of Origin" exists anywhere
+        if (/country\s+of\s+origin/i.test(scoreData.explanation)) {
+          console.log(
+            "[DEBUG] Found 'Country of Origin' text in the description"
+          );
+
+          // Try multiple pattern variations to catch different formats
+          const directPatterns = [
+            // Pattern 1: Colon or equals format - "Country of Origin: China" or "Country of Origin = China"
+            /country\s+of\s+origin\s*[:=]\s*([\w\s\-']{2,}?)(?:\.|,|;|\s|$)/i,
+
+            // Pattern 2: "is" format - "Country of Origin is China"
+            /country\s+of\s+origin\s+is\s+([\w\s\-']{2,}?)(?:\.|,|;|\s|$)/i,
+
+            // Pattern 3: Implicit format - "Country of Origin China"
+            /country\s+of\s+origin\s+([\w\s\-']{2,}?)(?:\.|,|;|\s|$)/i,
+          ];
+
+          // Try each pattern in succession
+          for (const pattern of directPatterns) {
+            console.log("[DEBUG] Trying country pattern:", pattern);
+            const match = scoreData.explanation.match(pattern);
+
+            if (match && match[1]) {
+              const countryName = match[1].trim();
+              console.log("[DEBUG] Country pattern match found:", countryName);
+
+              // Validate that this is actually a country name and not part of a phrase
+              if (
+                countryName.length >= 2 &&
+                !/unknown|n\/a|not specified|country|origin|made|manufactured|shipped/i.test(
+                  countryName
+                )
+              ) {
+                madeInMatch = match;
+                console.log("[DEBUG] Valid country name found:", countryName);
+                break;
+              } else {
+                console.log(
+                  "[DEBUG] Rejected invalid country name:",
+                  countryName
+                );
+              }
+            }
+          }
+
+          // If still no match, try line-by-line approach
+          if (!madeInMatch || !madeInMatch[1]) {
+            console.log(
+              "[DEBUG] Trying line-by-line search for Country of Origin"
+            );
+            const lines = scoreData.explanation.split(/[\n\r]/);
+
+            for (const line of lines) {
+              if (/country\s+of\s+origin/i.test(line)) {
+                console.log("[DEBUG] Found line with Country of Origin:", line);
+
+                // Try multiple extraction patterns on this specific line
+                const linePatterns = [
+                  /country\s+of\s+origin\s*[:=]\s*([\w\s\-']{2,}?)(?:\.|,|;|\s|$)/i,
+                  /country\s+of\s+origin\s+is\s+([\w\s\-']{2,}?)(?:\.|,|;|\s|$)/i,
+                  /country\s+of\s+origin\s+([\w\s\-']{2,}?)(?:\.|,|;|\s|$)/i,
+                ];
+
+                for (const pattern of linePatterns) {
+                  const countryMatch = line.match(pattern);
+                  if (countryMatch && countryMatch[1]) {
+                    const countryName = countryMatch[1].trim();
+                    console.log(
+                      "[DEBUG] Extracted country from line:",
+                      countryName
+                    );
+
+                    if (
+                      countryName.length >= 2 &&
+                      !/unknown|n\/a|not specified|country|origin|made|manufactured|shipped/i.test(
+                        countryName
+                      )
+                    ) {
+                      madeInMatch = countryMatch;
+                      console.log(
+                        "[DEBUG] Valid country from line found:",
+                        countryName
+                      );
+                      break;
+                    } else {
+                      console.log(
+                        "[DEBUG] Rejected invalid country from line:",
+                        countryName
+                      );
+                    }
+                  }
+                }
+
+                // If we found a match, break out of the line loop
+                if (madeInMatch && madeInMatch[1]) break;
+              }
+            }
+          }
+        } else {
+          // If "Country of Origin" isn't found, try with other common patterns
+          const alternativePatterns = [
+            /origin\s+country\s*[:=]\s*([\w\s\-']{2,}?)(?:\.|,|;|\s|$)/i,
+            /origin\s*[:=]\s*([\w\s\-']{2,}?)(?:\.|,|;|\s|$)/i,
+            /place\s+of\s+origin\s*[:=]\s*([\w\s\-']{2,}?)(?:\.|,|;|\s|$)/i,
+          ];
+
+          for (const pattern of alternativePatterns) {
+            console.log("[DEBUG] Trying alternative pattern:", pattern);
+            const match = scoreData.explanation.match(pattern);
+
+            if (match && match[1]) {
+              const countryName = match[1].trim();
+              console.log(
+                "[DEBUG] Alternative pattern match found:",
+                countryName
+              );
+
+              if (
+                countryName.length >= 2 &&
+                !/unknown|n\/a|not specified|country|origin|made|manufactured|shipped/i.test(
+                  countryName
+                )
+              ) {
+                madeInMatch = match;
+                console.log(
+                  "[DEBUG] Valid country from alternative pattern:",
+                  countryName
+                );
+                break;
+              } else {
+                console.log(
+                  "[DEBUG] Rejected invalid country from alternative pattern:",
+                  countryName
+                );
+              }
+            }
+          }
+        }
+      }
+
+      // Last fallback to preposition pattern
+      if (!madeInMatch || !madeInMatch[1]) {
+        const prepositionPattern =
+          /(?:from|in|by)\s+([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i;
+        console.log("[DEBUG] Trying preposition pattern:", prepositionPattern);
+        madeInMatch = scoreData.explanation.match(prepositionPattern);
+        if (madeInMatch && madeInMatch[1]) {
+          console.log("[DEBUG] Preposition pattern match:", madeInMatch[1]);
+        } else {
+          console.log("[DEBUG] No preposition pattern match found");
+        }
+      }
+
+      // If no match found yet, try a last desperate attempt to find structured key-value pairs
+      if (!madeInMatch || !madeInMatch[1]) {
+        console.log(
+          "[DEBUG] Trying a structured text search for key-value pairs"
+        );
+
+        // Look for lines with a clear key-value structure like "Country of Origin: China"
+        const lines = scoreData.explanation.split(/[\n\r]+/);
+        for (const line of lines) {
+          // Check for key-value pairs with colons - this is critical for product info sections
+          if (
+            /country|origin|made|manufactured|from|produced/i.test(line) &&
+            line.includes(":")
+          ) {
+            console.log("[DEBUG] Found potential key-value line:", line);
+
+            // First try to process exact key-value formats
+            const keyValueMatches = [
+              // Try explicit regex pattern first for more accuracy
+              line.match(
+                /(?:country\s+of\s+origin|origin\s+country|place\s+of\s+origin)\s*:\s*([A-Za-z\s\-']{2,})(?:\.|,|\s|$)/i
+              ),
+
+              // Then try the parts splitting approach as fallback
+              null,
+            ];
+
+            // If regex didn't match, try parts splitting
+            if (!keyValueMatches[0]) {
+              const parts = line.split(":");
+              if (
+                parts.length >= 2 &&
+                /country|origin|manufactured in|made in/i.test(parts[0])
+              ) {
+                // This is our fallback approach
+                keyValueMatches[1] = [null, parts[1].trim()];
+              }
+            }
+
+            // Process whichever match we got
+            for (const keyValueMatch of keyValueMatches) {
+              if (keyValueMatch && keyValueMatch[1]) {
+                const value = keyValueMatch[1].trim();
+
+                // More extensive validation of the extracted value
+                if (
+                  value.length >= 2 &&
+                  !/unknown|n\/a|not specified|not listed|information|country|origin|product|manufactured|made|location/i.test(
+                    value
+                  ) &&
+                  value.length < 30 // Country names shouldn't be too long
+                ) {
+                  console.log(
+                    "[DEBUG] Extracted country from key-value pair:",
+                    value
+                  );
+                  madeInMatch = [null, value];
+                  break;
+                } else {
+                  console.log(
+                    "[DEBUG] Rejected invalid key-value pair result:",
+                    value
+                  );
+                }
+              }
+            }
+
+            // Break out if we found a valid match
+            if (madeInMatch && madeInMatch[1]) break;
+          }
+        }
+      }
+
+      if (madeInMatch && madeInMatch[1]) {
+        let countryName = madeInMatch[1].trim();
+        // Clean up country name - remove trailing punctuation and extra spaces
+        countryName = countryName.replace(/[.,;:\s]+$/, "").trim();
+        console.log("[DEBUG] Raw country name before validation:", countryName);
+
+        // More extensive validation to ensure we only get actual country names
+        // First check for prompt phrases and instructions
+        if (
+          /or manufacturing location|country of origin|manufacturing country|manufactured in|produced in|from|origin|information|location|details|specs|unknown|n\/a|listed|provided|below|above/i.test(
+            countryName
+          )
+        ) {
+          console.log(
+            "[DEBUG] Found match but rejected as it contains prompt instructions or placeholders:",
+            countryName
+          );
+          madeInMatch = null;
+        }
+        // Filter out too short or likely non-country words or extremely long phrases
+        else if (
+          countryName.length < 3 ||
+          countryName.length > 30 ||
+          /the|and|our|their|this|that|these|those|where|what|which|please|see|check|view|information|not available/i.test(
+            countryName
+          )
+        ) {
+          console.log(
+            "[DEBUG] Found match but rejected as not a valid country name:",
+            countryName
+          );
+          madeInMatch = null;
+        }
+        // Check for partial matches that might be part of a longer phrase
+        else if (
+          /^(of|in|is|by|at|to|for)$/i.test(countryName) ||
+          /product|item|article|imported|exported|listed|shown|displayed/i.test(
+            countryName
+          )
+        ) {
+          console.log(
+            "[DEBUG] Found match but rejected as it's likely part of a phrase:",
+            countryName
+          );
+          madeInMatch = null;
+        } else {
+          console.log(
+            "[DEBUG] Found country match in description:",
+            countryName
+          );
+          // Store the cleaned country name
+          madeInMatch[1] = countryName;
+        }
+      } else {
+        console.log(
+          "[DEBUG] No country match found in product description after all attempts"
+        );
+      }
+    } else {
+      console.log(
+        "[DEBUG] No explanation text available to extract country from"
+      );
     }
+
     if (madeInMatch && madeInMatch[1]) {
-      // Found made in country in product description
-      scoreData.manufacturingCountry = madeInMatch[1].trim();
+      // Found made in country in product description (robust)
+      const countryName = madeInMatch[1].trim();
+
+      // Final validation before setting the country name
+      if (
+        countryName.length >= 2 &&
+        countryName.length <= 30 &&
+        !/manufacturing|location|country|origin|made|from|produced|or|the|information|where|details|instructions|search|examine|description|text|above|below|find|mention|phrases|product|refer|listed|unknown|n\/a|not/i.test(
+          countryName
+        )
+      ) {
+        console.log("[DEBUG] Setting valid country name:", countryName);
+        scoreData.manufacturingCountry = countryName;
+      } else {
+        console.log("[DEBUG] Rejecting invalid country name:", countryName);
+        scoreData.manufacturingCountry = "Unknown";
+      }
+
       // Try to get user's country from website (shipping location)
       let userCountry = null;
       // Try to get from common selectors or fallback to browser language
@@ -1354,102 +1847,103 @@ function insertSupplyChainBadge(priceElement, scoreData) {
       let productTitle =
         document.querySelector(".supply-chain-badge-title")?.textContent ||
         document.title;
-      let searchQuery = productBrand
-        ? `in which country ${productBrand} is made?`
-        : `in which country ${productTitle} is made?`;
-      console.log(
-        "[DEBUG] Brand origin fallback: productBrand=",
-        productBrand,
-        "productTitle=",
-        productTitle,
-        "searchQuery=",
-        searchQuery
-      );
-      fetchSustainabilityWebSummary(searchQuery, "").then((webSummary) => {
-        console.log("[DEBUG] Web summary for brand origin search:", webSummary);
-        // Use Groq AI to analyze the web search results for the most likely country
-        analyzeWithGroq(searchQuery, webSummary, "").then((aiResult) => {
-          console.log("[DEBUG] Groq AI result for brand origin:", aiResult);
-          if (aiResult && aiResult.manufacturingCountry) {
-            console.log(
-              "[DEBUG] Groq AI extracted manufacturingCountry:",
-              aiResult.manufacturingCountry
-            );
-            scoreData.brandOriginCountry = aiResult.manufacturingCountry;
-          } else {
-            // fallback: try to extract a likely country from the web summary using a simple regex for country names
-            const countryList = [
-              "China",
-              "India",
-              "Bangladesh",
-              "Vietnam",
-              "USA",
-              "United States",
-              "Germany",
-              "France",
-              "Italy",
-              "Spain",
-              "UK",
-              "United Kingdom",
-              "Japan",
-              "South Korea",
-              "Taiwan",
-              "Malaysia",
-              "Indonesia",
-              "Thailand",
-              "Turkey",
-              "Mexico",
-              "Brazil",
-              "Canada",
-              "Australia",
-              "Sweden",
-              "Finland",
-              "Norway",
-              "Denmark",
-              "Netherlands",
-              "Belgium",
-              "Switzerland",
-              "Austria",
-              "Poland",
-              "Czech Republic",
-              "Hungary",
-              "Romania",
-              "Bulgaria",
-              "Greece",
-              "Portugal",
-              "Ireland",
-              "Singapore",
-              "Hong Kong",
-              "UAE",
-              "Saudi Arabia",
-              "South Africa",
-              "Egypt",
-              "Morocco",
-              "Kenya",
-              "Nigeria",
-              "Ethiopia",
-              "Pakistan",
-              "Sri Lanka",
-              "Cambodia",
-              "Myanmar",
-              "Philippines",
-              "New Zealand",
-            ];
-            let foundCountry = null;
-            for (const country of countryList) {
-              const regex = new RegExp(`\\b${country}\\b`, "i");
-              if (webSummary && regex.test(webSummary)) {
-                foundCountry = country;
+      // Try queries specifically focused on manufacturing origin information - rely on AI for analysis
+      const queries = productBrand
+        ? [
+            `${productBrand} where are they manufactured country of origin`,
+            `${productBrand} products where are they made manufacturing country`,
+            `${productBrand} factory location manufacturing country`,
+            `${productBrand} made in which country`,
+            `where are ${productBrand} products manufactured country`,
+          ]
+        : [
+            `${productTitle} where is it manufactured country of origin`,
+            `${productTitle} where is it produced manufacturing country`,
+            `${productTitle} made in which country factory location`,
+            `${productTitle} manufacturing location country of origin`,
+            `${productTitle} production country factory`,
+          ];
+      (async () => {
+        let found = false;
+        for (const searchQuery of queries) {
+          const webSummary = await fetchSustainabilityWebSummary(
+            searchQuery,
+            ""
+          );
+          console.log("[DEBUG] Brand origin search query:", searchQuery);
+          console.log(
+            "[DEBUG] Web summary for brand origin search:",
+            webSummary
+          );
+          // Filter out unrelated results (tourism, travel, destination)
+          if (
+            webSummary &&
+            !/tourism|travel|destination|holiday|trip|tourist/i.test(webSummary)
+          ) {
+            // Use Groq AI to analyze the web search results for the most likely country
+            const aiResult = await analyzeWithGroq(searchQuery, webSummary, "");
+            console.log("[DEBUG] Groq AI result for brand origin:", aiResult);
+
+            if (aiResult && aiResult.manufacturingCountry) {
+              const extractedCountry = aiResult.manufacturingCountry.trim();
+
+              // Validate that we have a reasonable country name (not just "N/A" or too short)
+              if (
+                extractedCountry.length >= 3 &&
+                !/unknown|n\/a|not specified|no information|unavailable/i.test(
+                  extractedCountry
+                )
+              ) {
+                console.log(
+                  "[DEBUG] Groq AI extracted valid manufacturingCountry:",
+                  extractedCountry
+                );
+
+                // Store the valid country
+                scoreData.manufacturingCountry = extractedCountry;
+                scoreData.brandOriginCountry = extractedCountry;
+
+                // Log origin source for debugging
+                console.log(
+                  "[DEBUG] Manufacturing country source: AI web analysis"
+                );
+                found = true;
                 break;
+              } else {
+                console.log(
+                  "[DEBUG] Groq AI returned invalid country:",
+                  extractedCountry
+                );
+              }
+            } else {
+              // If Groq AI didn't extract a manufacturing country, provide detailed debugging
+              console.log(
+                "[DEBUG] No manufacturing country was found by Groq AI for query:",
+                searchQuery
+              );
+
+              // Check if explanation has any country-like mentions that might have been missed
+              if (aiResult && aiResult.explanation) {
+                const countryPattern =
+                  /\b(?:made in|manufactured in|produced in|from|country|origin)\s+([A-Za-z\s\-\']{2,})(?:\.|\,|\s|$)/i;
+                const explanationMatch =
+                  aiResult.explanation.match(countryPattern);
+                if (explanationMatch && explanationMatch[1]) {
+                  console.log(
+                    "[DEBUG] Possible missed country in AI explanation:",
+                    explanationMatch[1]
+                  );
+                }
               }
             }
-            console.log("[DEBUG] Regex fallback found country:", foundCountry);
-            if (foundCountry) {
-              scoreData.brandOriginCountry = foundCountry;
-            }
           }
-        });
-      });
+        }
+        if (!found) {
+          console.log(
+            "[DEBUG] No relevant brand origin country found after trying all queries."
+          );
+        }
+      })();
     }
   }
 
@@ -1517,12 +2011,31 @@ function insertSupplyChainBadge(priceElement, scoreData) {
 
   // Log detailed score calculation
   console.log(`Modal sustainability score calculation:
-    - Origin Information: ${originPoints} point(s)
+    - Origin Information: ${originPoints} point(s) [Country: ${
+    scoreData.manufacturingCountry || "Not detected"
+  }]
     - Supply Chain Transparency: ${transparencyPoints} point(s)
     - Certifications: ${certPoints} point(s)
     - Material Sourcing: ${materialPoints} point(s)
     - Environmental Practices: ${envPoints} point(s)
     = Total: ${calculatedScore}/5 (Web verification excluded from score)
+  `);
+
+  // Add comprehensive debug log about manufacturing country detection
+  console.log(`[DEBUG] Manufacturing Country Detection:
+    - Final country value: ${scoreData.manufacturingCountry || "Not detected"}
+    - Country source: ${
+      scoreData.manufacturingCountry
+        ? scoreData.brandOriginCountry
+          ? "Web search/AI"
+          : "Product description"
+        : "Not found"
+    }
+    - Points awarded for origin: ${originPoints}
+    - Product description available: ${scoreData.explanation ? "Yes" : "No"}
+    - Description length: ${
+      scoreData.explanation ? scoreData.explanation.length : 0
+    } characters
   `);
 
   // Store original score for logging
@@ -1657,8 +2170,16 @@ function insertSupplyChainBadge(priceElement, scoreData) {
         ? `
       <div class="supply-chain-origin">
         <h4>Manufacturing Origin</h4>
-        <p style="font-weight: bold; text-transform: uppercase;">${
-          scoreData.manufacturingCountry
+        <p style="font-weight: bold; font-size: 1.2em; color: #2e7d32; text-transform: uppercase;">${
+          // Enhanced final validation to ensure we display ONLY a clean country name
+          scoreData.manufacturingCountry &&
+          scoreData.manufacturingCountry.length >= 2 &&
+          scoreData.manufacturingCountry.length <= 30 &&
+          !/manufacturing|location|country|origin|made|from|produced|or|the|information|where|details|instructions|search|examine|description|text|above|below|find|mention|phrases|product|refer|listed|unknown|n\/a|not/i.test(
+            scoreData.manufacturingCountry
+          )
+            ? scoreData.manufacturingCountry
+            : "Unknown"
         }</p>
         <p class="origin-explanation">Manufacturing location affects carbon emissions, labor practices, and resource use.</p>
         ${
@@ -1739,64 +2260,6 @@ function insertSupplyChainBadge(priceElement, scoreData) {
         : `<div class="missing-data-warning">⚠️ No manufacturing origin information available</div>`
     }
 
-<div class="product-sustainability">
-  <h4>Product Sustainability</h4>
-  <p>Based on available supply chain information:</p>
-  <div class="sustainability-aspects">
-    <div class="sustainability-aspect">
-      <h5>Materials</h5>
-      <div class="aspect-rating ${
-        scoreData.score >= 3 ? "good" : scoreData.score >= 1 ? "medium" : "poor"
-      }">
-        ${scoreData.score >= 3 ? "✅" : scoreData.score >= 1 ? "⚠️" : "❓"}
-      </div>
-      <p>${
-        scoreData.score >= 3
-          ? "Likely sustainable materials"
-          : scoreData.score >= 1
-          ? "Mixed sustainability"
-          : "Unknown material sustainability"
-      }</p>
-    </div>
-    <div class="sustainability-aspect">
-      <h5>Production</h5>
-      <div class="aspect-rating ${
-        scoreData.score >= 3 ? "good" : scoreData.score >= 1 ? "medium" : "poor"
-      }">
-        ${scoreData.score >= 3 ? "✅" : scoreData.score >= 1 ? "⚠️" : "❓"}
-      </div>
-      <p>${
-        scoreData.score >= 3
-          ? "Likely ethical production"
-          : scoreData.score >= 1
-          ? "Some production transparency"
-          : "Unknown production conditions"
-      }</p>
-    </div>
-    <div class="sustainability-aspect">
-      <h5>Packaging</h5>
-      <div class="aspect-rating ${scoreData.score >= 3 ? "good" : "poor"}">
-        ${scoreData.score >= 3 ? "✅" : "❓"}
-      </div>
-      <p>${
-        scoreData.score >= 3
-          ? "Likely sustainable packaging"
-          : "Unknown packaging sustainability"
-      }</p>
-    </div>
-  </div>
-  <div class="sustainability-scope">
-    <h5>What we analyze:</h5>
-    <ul class="scope-list">
-      <li>Origin information (manufacturing country)</li>
-      <li>Supply chain transparency</li>
-      <li>Certifications</li>
-      <li>Material sourcing</li>
-      <li>Environmental practices</li>
-      <li>Packaging and end-of-life options</li>
-    </ul>
-  </div>
-</div>
 
 <div class="environmental-impact">
   <h4>Environmental Impact</h4>
