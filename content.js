@@ -334,169 +334,878 @@ IMPORTANT INSTRUCTIONS:
 
 // Calculate sustainability score based on 5 specific criteria
 function calculateSustainabilityScore(productText) {
-  // Initialize the scoring object
+  // Initialize the scoring object with confidence scores
   const sustainabilityScore = {
     originMentioned: {
       score: 0,
       evidence: "",
+      confidence: 0,
     },
     certifications: {
       score: 0,
       evidence: "",
+      confidence: 0,
     },
     sustainableMaterials: {
       score: 0,
       evidence: "",
+      confidence: 0,
     },
     endOfLife: {
       score: 0,
       evidence: "",
+      confidence: 0,
     },
     environmentalImpact: {
       score: 0,
       evidence: "",
+      confidence: 0,
     },
     totalScore: 0,
+    totalConfidence: 0,
+    version: "1.0", // Score calculation version for tracking
   };
 
-  // Check for manufacturing origin
+  // Check for manufacturing origin with improved pattern matching and context verification
+  // First, clean product text from irrelevant sections for more accurate matching
+  const cleanedText = productText
+    .replace(/customer review|customer rating|review section/gi, "")
+    .replace(/Q&A|frequently asked questions|questions and answers/gi, "")
+    .replace(/comment section|user comments/gi, "");
+
+  // List of known countries for validation
+  const knownCountries = Object.keys(countryEmissionFactors).concat([
+    "united states",
+    "great britain",
+    "united kingdom",
+    "czech republic",
+    "south korea",
+    "russia",
+    "israel",
+    "ukraine",
+    "taiwan",
+    "slovakia",
+    "slovenia",
+    "croatia",
+    "bosnia",
+    "serbia",
+    "montenegro",
+    "north macedonia",
+    "albania",
+    "latvia",
+    "estonia",
+    "lithuania",
+    "belarus",
+    "moldova",
+    "united arab emirates",
+    "saudi arabia",
+    "new zealand",
+    "south africa",
+  ]);
+
+  // More robust origin patterns with confidence levels
   const originPatterns = [
-    /country\s*of\s*origin\s*[:\-–=]\s*([A-Za-z\s\-']{2,30})/i,
-    /made\s*in\s*([A-Za-z\s\-']{2,30})/i,
-    /manufactured\s*in\s*([A-Za-z\s\-']{2,30})/i,
-    /origin\s*[:\-–=]\s*([A-Za-z\s\-']{2,30})/i,
+    {
+      pattern: /\bcountry\s*of\s*origin\s*[:\-–=]\s*([A-Za-z\s\-']{2,30})/i,
+      confidence: 0.9,
+    },
+    { pattern: /\bmade\s*in\s*([A-Za-z\s\-']{2,30})/i, confidence: 0.8 },
+    {
+      pattern: /\bmanufactured\s*in\s*([A-Za-z\s\-']{2,30})/i,
+      confidence: 0.85,
+    },
+    { pattern: /\borigin\s*[:\-–=]\s*([A-Za-z\s\-']{2,30})/i, confidence: 0.7 },
+    { pattern: /\bproduct\s*of\s*([A-Za-z\s\-']{2,30})/i, confidence: 0.75 },
+    { pattern: /\bimported\s*from\s*([A-Za-z\s\-']{2,30})/i, confidence: 0.6 },
+    { pattern: /\bcountry:\s*([A-Za-z\s\-']{2,30})/i, confidence: 0.65 },
   ];
 
-  for (const pattern of originPatterns) {
-    const match = productText.match(pattern);
-    if (match && match[1]) {
-      const country = match[1].replace(/[^A-Za-z\s\-']/g, "").trim();
-      if (
-        country.length >= 2 &&
-        country.length <= 30 &&
-        !/unknown|n\/a|not specified|not available|unavailable/i.test(country)
-      ) {
-        sustainabilityScore.originMentioned.score = 1;
-        sustainabilityScore.originMentioned.evidence = match[0];
-        console.log("[SUSTAINABILITY] Origin found:", country);
-        break;
+  let highestConfidence = 0;
+  let bestMatch = null;
+  let countryName = "";
+
+  try {
+    for (const { pattern, confidence } of originPatterns) {
+      const match = cleanedText.match(pattern);
+      if (match && match[1]) {
+        const country = match[1]
+          .replace(/[^A-Za-z\s\-']/g, "")
+          .trim()
+          .toLowerCase();
+
+        // Validate against known country names
+        const isKnownCountry = knownCountries.some((knownCountry) => {
+          return (
+            country === knownCountry ||
+            country.includes(knownCountry) ||
+            knownCountry.includes(country)
+          );
+        });
+
+        // Apply additional validation rules
+        if (
+          country.length >= 2 &&
+          country.length <= 30 &&
+          !/unknown|n\/a|not specified|not available|unavailable/i.test(
+            country
+          ) &&
+          !/review|question|answer|comment|rating/i.test(match[0]) && // Ensure not from review section
+          (!isKnownCountry || confidence > highestConfidence)
+        ) {
+          highestConfidence = confidence;
+          bestMatch = match;
+          countryName = country;
+
+          // If we find a very high confidence match, we can break early
+          if (confidence >= 0.85) {
+            break;
+          }
+        }
       }
     }
-  }
 
-  // Check for sustainability certifications
-  const certificationPatterns = [
-    /GOTS|Global\s*Organic\s*Textile\s*Standard/i,
-    /OEKO[\-\s]?TEX/i,
-    /FSC|Forest\s*Stewardship\s*Council/i,
-    /B\s*Corp|B\s*Corporation/i,
-    /Fairtrade|Fair\s*Trade/i,
-    /USDA\s*Organic/i,
-    /Rainforest\s*Alliance/i,
-    /Cradle\s*to\s*Cradle/i,
-    /Energy\s*Star/i,
-    /LEED|Leadership\s*in\s*Energy/i,
-    /Green\s*Seal/i,
-    /certified\s*organic/i,
-    /eco[\-\s]?cert/i,
-    /BlueSign/i,
-    /Ecolabel/i,
-    /EU\s*Flower/i,
-    /Nordic\s*Swan/i,
-  ];
-
-  for (const pattern of certificationPatterns) {
-    const match = productText.match(pattern);
-    if (match) {
-      sustainabilityScore.certifications.score = 1;
-      sustainabilityScore.certifications.evidence = match[0];
-      console.log("[SUSTAINABILITY] Certification found:", match[0]);
-      break;
-    }
-  }
-
-  // Check for sustainable materials
-  const materialPatterns = [
-    /sustainable\s*material/i,
-    /recycled\s*(?:content|material|fabric|plastic|paper|glass|metal)/i,
-    /organic\s*(?:cotton|material|fabric|fiber)/i,
-    /bamboo\s*(?:fiber|material)/i,
-    /eco[\-\s]?friendly\s*material/i,
-    /biodegradable\s*material/i,
-    /renewable\s*(?:material|resource)/i,
-    /natural\s*(?:fiber|material)s?(?!\s*gas)/i,
-    /sustainable\s*(?:wood|timber|paper|material|cotton|fabric)/i,
-    /ethically\s*sourced\s*(?:material|ingredient)/i,
-    /plant[\-\s]based/i,
-  ];
-
-  for (const pattern of materialPatterns) {
-    const match = productText.match(pattern);
-    if (match) {
-      sustainabilityScore.sustainableMaterials.score = 1;
-      sustainabilityScore.sustainableMaterials.evidence = match[0];
-      console.log("[SUSTAINABILITY] Sustainable material found:", match[0]);
-      break;
-    }
-  }
-
-  // Check for end-of-life information
-  const endOfLifePatterns = [
-    /recyclable/i,
-    /biodegradable/i,
-    /compostable/i,
-    /take[\-\s]back\s*(?:program|initiative)/i,
-    /return\s*(?:program|policy)\s*for\s*(?:recycling|disposal)/i,
-    /product\s*(?:can|may)\s*be\s*recycled/i,
-    /disposal\s*instructions/i,
-    /(?:made|designed)\s*to\s*be\s*(?:recycled|reused)/i,
-    /circular\s*(?:design|economy)/i,
-    /disassembly\s*instructions/i,
-  ];
-
-  for (const pattern of endOfLifePatterns) {
-    const match = productText.match(pattern);
-    if (match) {
-      sustainabilityScore.endOfLife.score = 1;
-      sustainabilityScore.endOfLife.evidence = match[0];
-      console.log("[SUSTAINABILITY] End-of-life info found:", match[0]);
-      break;
-    }
-  }
-
-  // Check for environmental impact disclosure
-  const environmentalImpactPatterns = [
-    /carbon\s*(?:footprint|neutral|negative|offset)/i,
-    /(?:reduced|lower|less)\s*(?:water|energy)\s*(?:usage|consumption)/i,
-    /zero\s*(?:waste|emission)/i,
-    /(?:reduced|lower|less)\s*(?:CO2|carbon dioxide|greenhouse gas|GHG)/i,
-    /environmental\s*impact\s*(?:statement|assessment)/i,
-    /life\s*cycle\s*assessment/i,
-    /(?:water|energy)\s*saving/i,
-    /climate\s*(?:friendly|positive|impact)/i,
-    /(?:renewable|green|clean)\s*energy/i,
-  ];
-
-  for (const pattern of environmentalImpactPatterns) {
-    const match = productText.match(pattern);
-    if (match) {
-      sustainabilityScore.environmentalImpact.score = 1;
-      sustainabilityScore.environmentalImpact.evidence = match[0];
+    if (bestMatch) {
+      sustainabilityScore.originMentioned.score = 1;
+      sustainabilityScore.originMentioned.evidence = bestMatch[0];
+      sustainabilityScore.originMentioned.confidence = highestConfidence;
       console.log(
-        "[SUSTAINABILITY] Environmental impact info found:",
-        match[0]
+        "[SUSTAINABILITY] Origin found:",
+        countryName,
+        "with confidence:",
+        highestConfidence
       );
-      break;
     }
+  } catch (error) {
+    console.error("[SUSTAINABILITY] Error detecting origin:", error);
   }
 
-  // Calculate total score (0-5)
-  sustainabilityScore.totalScore =
-    sustainabilityScore.originMentioned.score +
-    sustainabilityScore.certifications.score +
-    sustainabilityScore.sustainableMaterials.score +
-    sustainabilityScore.endOfLife.score +
-    sustainabilityScore.environmentalImpact.score;
+  // Check for sustainability certifications with context verification
+  // Structured certification data with proper weighting and confidence
+  const certificationData = [
+    {
+      name: "GOTS",
+      pattern: /\b(?:GOTS|Global\s*Organic\s*Textile\s*Standard)\b/i,
+      weight: 1.0,
+      confidence: 0.95,
+      category: "textile",
+    },
+    {
+      name: "OEKO-TEX",
+      pattern: /\b(?:OEKO[\-\s]?TEX|Standard\s*100)\b/i,
+      weight: 1.0,
+      confidence: 0.9,
+      category: "textile",
+    },
+    {
+      name: "FSC",
+      pattern: /\b(?:FSC|Forest\s*Stewardship\s*Council)\b/i,
+      weight: 1.0,
+      confidence: 0.9,
+      category: "wood",
+    },
+    {
+      name: "B Corp",
+      pattern: /\b(?:B\s*Corp|B\s*Corporation|Certified\s*B\s*Corporation)\b/i,
+      weight: 1.0,
+      confidence: 0.85,
+      category: "company",
+    },
+    {
+      name: "Fair Trade",
+      pattern: /\b(?:Fairtrade|Fair\s*Trade)\b/i,
+      weight: 1.0,
+      confidence: 0.85,
+      category: "social",
+    },
+    {
+      name: "USDA Organic",
+      pattern:
+        /\b(?:USDA\s*Organic|Certified\s*Organic|Organic\s*Certification)\b/i,
+      weight: 1.0,
+      confidence: 0.9,
+      category: "agriculture",
+    },
+    {
+      name: "Rainforest Alliance",
+      pattern: /\b(?:Rainforest\s*Alliance)\b/i,
+      weight: 1.0,
+      confidence: 0.9,
+      category: "agriculture",
+    },
+    {
+      name: "Cradle to Cradle",
+      pattern: /\b(?:Cradle\s*to\s*Cradle|C2C\s*Certified)\b/i,
+      weight: 1.0,
+      confidence: 0.9,
+      category: "product",
+    },
+    {
+      name: "Energy Star",
+      pattern: /\b(?:Energy\s*Star)\b/i,
+      weight: 1.0,
+      confidence: 0.9,
+      category: "electronics",
+    },
+    {
+      name: "LEED",
+      pattern:
+        /\b(?:LEED|Leadership\s*in\s*Energy\s*and\s*Environmental\s*Design)\b/i,
+      weight: 1.0,
+      confidence: 0.85,
+      category: "building",
+    },
+    {
+      name: "Green Seal",
+      pattern: /\b(?:Green\s*Seal)\b/i,
+      weight: 1.0,
+      confidence: 0.8,
+      category: "product",
+    },
+    {
+      name: "BlueSign",
+      pattern: /\b(?:BlueSign|Blue\s*Sign)\b/i,
+      weight: 1.0,
+      confidence: 0.85,
+      category: "textile",
+    },
+    {
+      name: "EU Ecolabel",
+      pattern: /\b(?:Ecolabel|EU\s*Flower|EU\s*Ecolabel)\b/i,
+      weight: 1.0,
+      confidence: 0.85,
+      category: "product",
+    },
+    {
+      name: "Nordic Swan",
+      pattern: /\b(?:Nordic\s*Swan)\b/i,
+      weight: 1.0,
+      confidence: 0.85,
+      category: "product",
+    },
+  ];
+
+  // Look for certifications with context
+  let foundCertifications = [];
+  let certHighestConfidence = 0;
+  let bestEvidence = "";
+
+  try {
+    // First check if text contains "certification" or "certified" for context
+    const hasCertificationContext =
+      /certifi(?:cation|ed|cate)|eco.?label|standard|sustainable\s*label/i.test(
+        productText
+      );
+    const contextBoost = hasCertificationContext ? 0.1 : 0;
+
+    for (const cert of certificationData) {
+      const matches = productText.match(
+        new RegExp(
+          `((?:[\\s\\w,.]{0,30})${cert.pattern.source}(?:[\\s\\w,.]{0,30}))`,
+          "gi"
+        )
+      );
+
+      if (matches && matches.length) {
+        // For each match, check if it's in a relevant context
+        for (const match of matches) {
+          // Check if the match is in a negative context (e.g. "not certified by")
+          const isNegativeContext =
+            /not\s+(?:\w+\s+){0,3}(?:certified|compliant)|doesn't\s+(?:\w+\s+){0,3}(?:meet|have)/i.test(
+              match
+            );
+
+          if (!isNegativeContext) {
+            const adjustedConfidence = Math.min(
+              cert.confidence + contextBoost,
+              1.0
+            );
+
+            foundCertifications.push({
+              name: cert.name,
+              evidence: match,
+              confidence: adjustedConfidence,
+            });
+
+            if (adjustedConfidence > certHighestConfidence) {
+              certHighestConfidence = adjustedConfidence;
+              bestEvidence = match;
+            }
+          }
+        }
+      }
+    }
+
+    // If we found any certifications
+    if (foundCertifications.length > 0) {
+      sustainabilityScore.certifications.score = 1; // Binary scoring: has certification or not
+      sustainabilityScore.certifications.evidence = bestEvidence;
+      sustainabilityScore.certifications.confidence = certHighestConfidence;
+      sustainabilityScore.certifications.allFound = foundCertifications.map(
+        (c) => c.name
+      );
+
+      console.log(
+        "[SUSTAINABILITY] Certifications found:",
+        foundCertifications.map((c) => c.name).join(", "),
+        "with highest confidence:",
+        certHighestConfidence
+      );
+    }
+  } catch (error) {
+    console.error("[SUSTAINABILITY] Error detecting certifications:", error);
+  }
+
+  // Check for sustainable materials with improved context validation
+  // Group materials by type with confidence levels
+  const sustainableMaterialTypes = [
+    {
+      category: "recycled",
+      patterns: [
+        { regex: /\b(?:100%|[0-9]{1,3}%)\s+recycled\b/i, confidence: 0.95 },
+        {
+          regex:
+            /\brecycled\s+(?:content|material|fabric|plastic|paper|glass|metal)\b/i,
+          confidence: 0.9,
+        },
+        { regex: /\bmade\s+(?:from|with)\s+recycled\b/i, confidence: 0.85 },
+        { regex: /\bpost-consumer(?:\s+recycled)?\b/i, confidence: 0.9 },
+      ],
+    },
+    {
+      category: "organic",
+      patterns: [
+        {
+          regex:
+            /\b(?:100%|[0-9]{1,3}%)\s+organic\s+(?:cotton|material|fabric|fiber)/i,
+          confidence: 0.95,
+        },
+        {
+          regex:
+            /\b(?:certified)\s+organic\s+(?:cotton|material|fabric|fiber)/i,
+          confidence: 0.95,
+        },
+        {
+          regex: /\borganic\s+(?:cotton|material|fabric|fiber)\b/i,
+          confidence: 0.85,
+        },
+      ],
+    },
+    {
+      category: "sustainable_fibers",
+      patterns: [
+        { regex: /\bbamboo\s+(?:fiber|material)\b/i, confidence: 0.85 },
+        { regex: /\bhemp\s+(?:fiber|material)\b/i, confidence: 0.85 },
+        { regex: /\btencel\b/i, confidence: 0.9 },
+        { regex: /\blyocell\b/i, confidence: 0.9 },
+        { regex: /\bmodal\s+(?:fiber|fabric)\b/i, confidence: 0.8 },
+      ],
+    },
+    {
+      category: "biodegradable",
+      patterns: [
+        {
+          regex: /\bbiodegradable\s+(?:material|packaging|product)\b/i,
+          confidence: 0.9,
+        },
+        {
+          regex: /\bcompostable\s+(?:material|packaging|product)\b/i,
+          confidence: 0.9,
+        },
+      ],
+    },
+    {
+      category: "renewable",
+      patterns: [
+        { regex: /\brenewable\s+(?:material|resource)\b/i, confidence: 0.85 },
+        { regex: /\bplant[\-\s]based\b/i, confidence: 0.8 },
+        { regex: /\bsustainably\s+(?:sourced|harvested)\b/i, confidence: 0.8 },
+      ],
+    },
+    {
+      category: "general_sustainable",
+      patterns: [
+        { regex: /\beco[\-\s]?friendly\s+material\b/i, confidence: 0.7 },
+        {
+          regex:
+            /\bsustainable\s+(?:wood|timber|paper|material|cotton|fabric)\b/i,
+          confidence: 0.8,
+        },
+        {
+          regex: /\bethically\s+sourced\s+(?:material|ingredient)\b/i,
+          confidence: 0.75,
+        },
+        {
+          regex: /\bnatural\s+(?:fiber|material)s?\b(?!\s*gas)/i,
+          confidence: 0.65,
+        },
+      ],
+    },
+  ];
+
+  try {
+    let foundMaterials = [];
+    let materialHighestConfidence = 0;
+    let bestMaterialEvidence = "";
+    let materialCategories = new Set();
+
+    // Check for context phrases that would increase confidence
+    const materialContext = [
+      /made\s+(?:of|from|with|using)/i,
+      /materials?\s+(?:include|used|composition|content)/i,
+      /(?:product|item)\s+(?:made|constructed|built|consists|composition)/i,
+      /composition/i,
+      /material\s+details/i,
+    ];
+
+    const hasMaterialContext = materialContext.some((regex) =>
+      regex.test(productText)
+    );
+    const contextBoost = hasMaterialContext ? 0.1 : 0;
+
+    // Find sustainable material mentions in the text
+    for (const materialType of sustainableMaterialTypes) {
+      for (const { regex, confidence } of materialType.patterns) {
+        const matches = productText.match(
+          new RegExp(
+            `((?:[\\s\\w,.]{0,30})${regex.source}(?:[\\s\\w,.]{0,30}))`,
+            "gi"
+          )
+        );
+
+        if (matches && matches.length) {
+          for (const match of matches) {
+            // Check for negative contexts
+            const isNegativeContext =
+              /not\s+(?:\w+\s+){0,3}(?:made from|contain)|doesn't\s+(?:\w+\s+){0,3}(?:use|have)/i.test(
+                match
+              );
+
+            if (!isNegativeContext) {
+              const adjustedConfidence = Math.min(
+                confidence + contextBoost,
+                1.0
+              );
+
+              foundMaterials.push({
+                category: materialType.category,
+                evidence: match,
+                confidence: adjustedConfidence,
+              });
+
+              materialCategories.add(materialType.category);
+
+              if (adjustedConfidence > materialHighestConfidence) {
+                materialHighestConfidence = adjustedConfidence;
+                bestMaterialEvidence = match;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Multiple categories or high confidence boosts the score
+    if (foundMaterials.length > 0) {
+      sustainabilityScore.sustainableMaterials.score = 1; // Binary scoring for now
+      sustainabilityScore.sustainableMaterials.evidence = bestMaterialEvidence;
+      sustainabilityScore.sustainableMaterials.confidence =
+        materialHighestConfidence;
+      sustainabilityScore.sustainableMaterials.categories =
+        Array.from(materialCategories);
+
+      console.log(
+        "[SUSTAINABILITY] Sustainable materials found:",
+        Array.from(materialCategories).join(", "),
+        "with highest confidence:",
+        materialHighestConfidence
+      );
+    }
+  } catch (error) {
+    console.error(
+      "[SUSTAINABILITY] Error detecting sustainable materials:",
+      error
+    );
+  }
+
+  // Check for end-of-life information with context validation
+  // Categorize end-of-life options with confidence levels
+  const endOfLifeOptions = [
+    {
+      category: "recyclability",
+      patterns: [
+        { regex: /\b(?:100%|fully)\s+recyclable\b/i, confidence: 0.95 },
+        {
+          regex: /\brecyclable\s+(?:materials|packaging|components|product)\b/i,
+          confidence: 0.9,
+        },
+        {
+          regex: /\bproduct\s*(?:can|may)\s*be\s*recycled\b/i,
+          confidence: 0.85,
+        },
+        {
+          regex: /\b(?:made|designed)\s*to\s*be\s*recycled\b/i,
+          confidence: 0.9,
+        },
+      ],
+    },
+    {
+      category: "biodegradability",
+      patterns: [
+        { regex: /\b(?:100%|fully)\s+biodegradable\b/i, confidence: 0.95 },
+        {
+          regex:
+            /\bbiodegradable\s+(?:materials|packaging|components|product)\b/i,
+          confidence: 0.9,
+        },
+        { regex: /\b(?:100%|fully)\s+compostable\b/i, confidence: 0.95 },
+        {
+          regex:
+            /\bcompostable\s+(?:materials|packaging|components|product)\b/i,
+          confidence: 0.9,
+        },
+      ],
+    },
+    {
+      category: "takeback_programs",
+      patterns: [
+        {
+          regex: /\btake[\-\s]back\s*(?:program|initiative|scheme)\b/i,
+          confidence: 0.95,
+        },
+        {
+          regex:
+            /\breturn\s*(?:program|policy|scheme)\s*for\s*(?:recycling|disposal)\b/i,
+          confidence: 0.9,
+        },
+        { regex: /\bend-of-life\s*(?:collection|return)\b/i, confidence: 0.9 },
+        {
+          regex: /\bproduct\s*(?:recycling|collection)\s*program\b/i,
+          confidence: 0.85,
+        },
+      ],
+    },
+    {
+      category: "circular_design",
+      patterns: [
+        {
+          regex: /\bcircular\s*(?:design|economy|product)\b/i,
+          confidence: 0.9,
+        },
+        {
+          regex: /\b(?:made|designed)\s*to\s*be\s*reused\b/i,
+          confidence: 0.85,
+        },
+        { regex: /\bdisassembly\s*instructions\b/i, confidence: 0.9 },
+        { regex: /\b(?:easy|simple)\s*to\s*repair\b/i, confidence: 0.85 },
+        { regex: /\brepairability\b/i, confidence: 0.9 },
+      ],
+    },
+    {
+      category: "disposal_guidance",
+      patterns: [
+        { regex: /\bdisposal\s*instructions\b/i, confidence: 0.8 },
+        {
+          regex: /\bend-of-life\s*(?:instructions|guidance)\b/i,
+          confidence: 0.85,
+        },
+        {
+          regex: /\bhow\s*to\s*(?:dispose|recycle)\s*this\s*product\b/i,
+          confidence: 0.8,
+        },
+      ],
+    },
+  ];
+
+  try {
+    let foundEndOfLifeOptions = [];
+    let eolHighestConfidence = 0;
+    let bestEolEvidence = "";
+    let eolCategories = new Set();
+
+    // Check for context phrases that would increase confidence
+    const eolContext = [
+      /end.?of.?life/i,
+      /disposal/i,
+      /recycling\s+(?:information|instructions)/i,
+      /how\s+to\s+dispose/i,
+      /product\s+(?:lifecycle|life\s+cycle)/i,
+    ];
+
+    const hasEolContext = eolContext.some((regex) => regex.test(productText));
+    const contextBoost = hasEolContext ? 0.1 : 0;
+
+    // Find end-of-life mentions in the text
+    for (const eolOption of endOfLifeOptions) {
+      for (const { regex, confidence } of eolOption.patterns) {
+        const matches = productText.match(
+          new RegExp(
+            `((?:[\\s\\w,.]{0,30})${regex.source}(?:[\\s\\w,.]{0,30}))`,
+            "gi"
+          )
+        );
+
+        if (matches && matches.length) {
+          for (const match of matches) {
+            // Check for negative contexts
+            const isNegativeContext =
+              /not\s+(?:\w+\s+){0,3}(?:recyclable|biodegradable|compostable)|cannot\s+(?:\w+\s+){0,3}(?:be recycled|be composted)/i.test(
+                match
+              );
+
+            if (!isNegativeContext) {
+              const adjustedConfidence = Math.min(
+                confidence + contextBoost,
+                1.0
+              );
+
+              foundEndOfLifeOptions.push({
+                category: eolOption.category,
+                evidence: match,
+                confidence: adjustedConfidence,
+              });
+
+              eolCategories.add(eolOption.category);
+
+              if (adjustedConfidence > eolHighestConfidence) {
+                eolHighestConfidence = adjustedConfidence;
+                bestEolEvidence = match;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Set score if we found any end-of-life options
+    if (foundEndOfLifeOptions.length > 0) {
+      sustainabilityScore.endOfLife.score = 1; // Binary scoring for now
+      sustainabilityScore.endOfLife.evidence = bestEolEvidence;
+      sustainabilityScore.endOfLife.confidence = eolHighestConfidence;
+      sustainabilityScore.endOfLife.categories = Array.from(eolCategories);
+
+      console.log(
+        "[SUSTAINABILITY] End-of-life options found:",
+        Array.from(eolCategories).join(", "),
+        "with highest confidence:",
+        eolHighestConfidence
+      );
+    }
+  } catch (error) {
+    console.error(
+      "[SUSTAINABILITY] Error detecting end-of-life options:",
+      error
+    );
+  }
+
+  // Check for environmental impact disclosure with context validation
+  // Categorize environmental impact measures with confidence levels
+  const environmentalImpactCategories = [
+    {
+      category: "carbon_footprint",
+      patterns: [
+        {
+          regex: /\bcarbon\s*(?:footprint|neutral|negative|offset)\b/i,
+          confidence: 0.95,
+        },
+        { regex: /\bnet\s*zero\s*(?:carbon|emissions)\b/i, confidence: 0.95 },
+        {
+          regex:
+            /\b(?:reduced|lower|less)\s*(?:CO2|carbon dioxide|greenhouse gas|GHG)\b/i,
+          confidence: 0.9,
+        },
+        {
+          regex: /\bclimate\s*(?:neutral|positive|friendly)\b/i,
+          confidence: 0.85,
+        },
+      ],
+    },
+    {
+      category: "water_conservation",
+      patterns: [
+        {
+          regex:
+            /\b(?:reduced|lower|less)\s*water\s*(?:usage|consumption|footprint)\b/i,
+          confidence: 0.9,
+        },
+        {
+          regex: /\bwater\s*(?:saving|efficient|conservation|recycling)\b/i,
+          confidence: 0.85,
+        },
+        { regex: /\blow\s*water\s*impact\b/i, confidence: 0.8 },
+      ],
+    },
+    {
+      category: "energy_efficiency",
+      patterns: [
+        {
+          regex:
+            /\b(?:reduced|lower|less)\s*energy\s*(?:usage|consumption|footprint)\b/i,
+          confidence: 0.9,
+        },
+        {
+          regex: /\benergy\s*(?:saving|efficient|conservation)\b/i,
+          confidence: 0.85,
+        },
+        { regex: /\blow\s*energy\s*impact\b/i, confidence: 0.8 },
+        { regex: /\b(?:renewable|green|clean)\s*energy\b/i, confidence: 0.9 },
+      ],
+    },
+    {
+      category: "zero_waste",
+      patterns: [
+        { regex: /\bzero\s*(?:waste|emission)\b/i, confidence: 0.95 },
+        {
+          regex: /\bwaste\s*(?:reduction|minimized|reduced)\b/i,
+          confidence: 0.85,
+        },
+        { regex: /\bminimal\s*packaging\b/i, confidence: 0.8 },
+      ],
+    },
+    {
+      category: "impact_assessment",
+      patterns: [
+        {
+          regex:
+            /\benvironmental\s*impact\s*(?:statement|assessment|analysis)\b/i,
+          confidence: 0.95,
+        },
+        { regex: /\blife\s*cycle\s*assessment\b/i, confidence: 0.95 },
+        {
+          regex: /\bsustainability\s*(?:report|assessment|analysis)\b/i,
+          confidence: 0.9,
+        },
+        { regex: /\becological\s*(?:footprint|impact)\b/i, confidence: 0.9 },
+      ],
+    },
+  ];
+
+  try {
+    let foundEnvironmentalMeasures = [];
+    let envHighestConfidence = 0;
+    let bestEnvEvidence = "";
+    let envCategories = new Set();
+
+    // Check for context phrases that would increase confidence
+    const envContext = [
+      /environmental/i,
+      /sustainability/i,
+      /eco.?friendly/i,
+      /planet/i,
+      /climate/i,
+    ];
+
+    const hasEnvContext = envContext.some((regex) => regex.test(productText));
+    const contextBoost = hasEnvContext ? 0.1 : 0;
+
+    // Find environmental impact mentions in the text
+    for (const envCategory of environmentalImpactCategories) {
+      for (const { regex, confidence } of envCategory.patterns) {
+        const matches = productText.match(
+          new RegExp(
+            `((?:[\\s\\w,.]{0,30})${regex.source}(?:[\\s\\w,.]{0,30}))`,
+            "gi"
+          )
+        );
+
+        if (matches && matches.length) {
+          for (const match of matches) {
+            // Check for negative contexts
+            const isNegativeContext =
+              /not\s+(?:\w+\s+){0,3}(?:environmentally friendly|sustainable)|doesn't\s+(?:\w+\s+){0,3}(?:reduce|lower|minimize)/i.test(
+                match
+              );
+
+            if (!isNegativeContext) {
+              const adjustedConfidence = Math.min(
+                confidence + contextBoost,
+                1.0
+              );
+
+              foundEnvironmentalMeasures.push({
+                category: envCategory.category,
+                evidence: match,
+                confidence: adjustedConfidence,
+              });
+
+              envCategories.add(envCategory.category);
+
+              if (adjustedConfidence > envHighestConfidence) {
+                envHighestConfidence = adjustedConfidence;
+                bestEnvEvidence = match;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Set score if we found any environmental measures
+    if (foundEnvironmentalMeasures.length > 0) {
+      sustainabilityScore.environmentalImpact.score = 1; // Binary scoring for now
+      sustainabilityScore.environmentalImpact.evidence = bestEnvEvidence;
+      sustainabilityScore.environmentalImpact.confidence = envHighestConfidence;
+      sustainabilityScore.environmentalImpact.categories =
+        Array.from(envCategories);
+
+      console.log(
+        "[SUSTAINABILITY] Environmental impact measures found:",
+        Array.from(envCategories).join(", "),
+        "with highest confidence:",
+        envHighestConfidence
+      );
+    }
+  } catch (error) {
+    console.error(
+      "[SUSTAINABILITY] Error detecting environmental impact:",
+      error
+    );
+  }
+
+  // Calculate the overall confidence score based on individual confidences
+  const totalConfidenceScore =
+    ((sustainabilityScore.originMentioned.confidence || 0) +
+      (sustainabilityScore.certifications.confidence || 0) +
+      (sustainabilityScore.sustainableMaterials.confidence || 0) +
+      (sustainabilityScore.endOfLife.confidence || 0) +
+      (sustainabilityScore.environmentalImpact.confidence || 0)) /
+    5; // Average confidence across all criteria
+
+  // Calculate total score (0-5) with robust error handling
+  try {
+    sustainabilityScore.totalScore =
+      sustainabilityScore.originMentioned.score +
+      sustainabilityScore.certifications.score +
+      sustainabilityScore.sustainableMaterials.score +
+      sustainabilityScore.endOfLife.score +
+      sustainabilityScore.environmentalImpact.score;
+
+    sustainabilityScore.totalConfidence = totalConfidenceScore;
+
+    // Log the full score breakdown for debugging
+    console.log(
+      "[SUSTAINABILITY] Final score calculation complete:",
+      JSON.stringify({
+        origin: sustainabilityScore.originMentioned.score,
+        certifications: sustainabilityScore.certifications.score,
+        materials: sustainabilityScore.sustainableMaterials.score,
+        endOfLife: sustainabilityScore.endOfLife.score,
+        environment: sustainabilityScore.environmentalImpact.score,
+        total: sustainabilityScore.totalScore,
+        confidence: sustainabilityScore.totalConfidence.toFixed(2),
+      })
+    );
+  } catch (error) {
+    console.error("[SUSTAINABILITY] Error calculating total score:", error);
+    // Ensure we always return a valid score even if calculation fails
+    sustainabilityScore.totalScore = Math.max(
+      0,
+      (sustainabilityScore.originMentioned.score || 0) +
+        (sustainabilityScore.certifications.score || 0) +
+        (sustainabilityScore.sustainableMaterials.score || 0) +
+        (sustainabilityScore.endOfLife.score || 0) +
+        (sustainabilityScore.environmentalImpact.score || 0)
+    );
+  }
 
   console.log(
     "[SUSTAINABILITY] Final score breakdown:",
@@ -1285,16 +1994,31 @@ function calculateCO2Emissions(manufacturingCountry) {
 // Get rating icons based on score (0-5)
 function getRatingIcons(score) {
   let icons = "";
+
+  // Enhanced SVG icons with better visuals and colors
   // Filled green leaf SVG for positive ratings
   const filledLeaf = `<svg width='18' height='18' viewBox='0 0 24 24' fill='#4caf50' stroke='#388e3c' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round' style='vertical-align:middle;'><path d='M2 22s16-4 20-20C6 2 2 22 2 22z'></path></svg>`;
+
   // Light gray filled leaf SVG for negative ratings
   const grayLeaf = `<svg width='18' height='18' viewBox='0 0 24 24' fill='#e0e0e0' stroke='#bdbdbd' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round' style='vertical-align:middle;'><path d='M2 22s16-4 20-20C6 2 2 22 2 22z'></path></svg>`;
+
+  // Gold star for excellent sustainability (5/5)
+  const goldStar =
+    score === 5
+      ? `<svg width='20' height='20' viewBox='0 0 24 24' fill='#FFD700' stroke='#FFA500' stroke-width='1' style='vertical-align:middle; margin-left: 4px;'><polygon points='12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26'/></svg>`
+      : "";
+
+  // Add the leaf icons
   for (let i = 0; i < score; i++) {
     icons += filledLeaf;
   }
   for (let i = score; i < 5; i++) {
     icons += grayLeaf;
   }
+
+  // Add gold star for perfect scores
+  icons += goldStar;
+
   return icons;
 }
 
@@ -1498,15 +2222,43 @@ function insertSupplyChainBadge(priceElement, scoreData) {
         : 0;
   }
 
-  // Always use sustainabilityScoreData.totalScore for both badge and modal
-  // Calculate the score based on exactly five criteria with no half points
-  let syncedScore = scoreData.sustainabilityScoreData
-    ? scoreData.sustainabilityScoreData.totalScore
-    : badgeOriginPoints +
-      badgeCertPoints +
-      badgeMaterialPoints +
-      badgeEndOfLifePoints +
-      badgeEnvPoints;
+  // Always use sustainabilityScoreData.totalScore for both badge and modal with improved error handling
+  let syncedScore = 0;
+  try {
+    // Use the sustainability score breakdown if available, otherwise calculate from individual points
+    syncedScore = scoreData.sustainabilityScoreData
+      ? scoreData.sustainabilityScoreData.totalScore
+      : badgeOriginPoints +
+        badgeCertPoints +
+        badgeMaterialPoints +
+        badgeEndOfLifePoints +
+        badgeEnvPoints;
+
+    // Get confidence information if available
+    const confidenceScore =
+      scoreData.sustainabilityScoreData?.totalConfidence || 0;
+
+    // Log confidence information
+    if (confidenceScore > 0) {
+      console.log(
+        `[DEBUG] Score confidence level: ${(confidenceScore * 100).toFixed(1)}%`
+      );
+    }
+
+    // Consider confidence in final calculation (future enhancement)
+    // For now, we'll just use the raw score but log the confidence
+  } catch (error) {
+    console.error("[ERROR] Failed to calculate synced score:", error);
+    // Provide a reasonable fallback in case of error
+    syncedScore = Math.max(
+      0,
+      (badgeOriginPoints || 0) +
+        (badgeCertPoints || 0) +
+        (badgeMaterialPoints || 0) +
+        (badgeEndOfLifePoints || 0) +
+        (badgeEnvPoints || 0)
+    );
+  }
 
   // Ensure score is within range 0-5, no half points
   syncedScore = Math.max(0, Math.min(5, Math.floor(syncedScore)));
@@ -1526,6 +2278,36 @@ function insertSupplyChainBadge(priceElement, scoreData) {
   scoreData.score = syncedScore;
   scoreData.icons = getRatingIcons(Math.round(syncedScore));
 
+  // Store confidence data for future analysis if available
+  if (scoreData.sustainabilityScoreData?.confidenceLevels) {
+    try {
+      // Get product identifier (can be URL or product name/ID)
+      const productId = window.location.href || document.title;
+      // Create a simplified key to avoid storage issues
+      const storageKey =
+        "sustainability_confidence_" +
+        productId.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 50);
+
+      // Store confidence data with timestamp
+      const confidenceData = {
+        timestamp: new Date().toISOString(),
+        levels: scoreData.sustainabilityScoreData.confidenceLevels,
+        totalConfidence: scoreData.sustainabilityScoreData.totalConfidence || 0,
+        score: syncedScore,
+      };
+
+      // Store in localStorage for trend analysis
+      localStorage.setItem(storageKey, JSON.stringify(confidenceData));
+
+      console.log(
+        "[DEBUG] Stored confidence data for future analysis:",
+        storageKey
+      );
+    } catch (error) {
+      console.error("[ERROR] Failed to store confidence data:", error);
+    }
+  }
+
   // Create badge element
   const badge = document.createElement("div");
   badge.id = "supply-chain-badge";
@@ -1535,9 +2317,47 @@ function insertSupplyChainBadge(priceElement, scoreData) {
   // Determine badge color based on score
   const badgeColor = scoreData.score > 0 ? "#4caf50" : "#e53935"; // Green if > 0, red if 0
 
-  // Badge revision: add title, keep score and leaf in one line, remove label text
+  // Badge revision with enhanced information
+  // Create tooltip with detailed breakdown if available
+  let tooltipContent = "";
+  if (scoreData.sustainabilityScoreData) {
+    tooltipContent = `
+      Origin: ${badgeOriginPoints}/1 ${
+      badgeConfidenceLevels.origin > 0.7 ? "✓" : ""
+    }
+      Certifications: ${badgeCertPoints}/1 ${
+      badgeConfidenceLevels.certifications > 0.7 ? "✓" : ""
+    }
+      Materials: ${badgeMaterialPoints}/1 ${
+      badgeConfidenceLevels.materials > 0.7 ? "✓" : ""
+    }
+      End of Life: ${badgeEndOfLifePoints}/1 ${
+      badgeConfidenceLevels.endOfLife > 0.7 ? "✓" : ""
+    }
+      Environmental: ${badgeEnvPoints}/1 ${
+      badgeConfidenceLevels.environment > 0.7 ? "✓" : ""
+    }
+    `;
+  }
+
+  // Choose appropriate icon based on score
+  let sustainabilityIcon = "🍃"; // Default
+  if (syncedScore >= 4) {
+    sustainabilityIcon = "🌱"; // Excellent sustainability score
+  } else if (syncedScore >= 2) {
+    sustainabilityIcon = "♻️"; // Moderate sustainability score
+  } else if (syncedScore >= 1) {
+    sustainabilityIcon = "🌍"; // Low sustainability score
+  } else {
+    sustainabilityIcon = "⚠️"; // No sustainability info
+  }
+
   badge.innerHTML = `
-    <div class="supply-chain-badge-content sleek-badge" style="background: #fff; border-radius: 18px; box-shadow: 0 2px 8px 0 rgba(60,60,60,0.10); padding: 8px 18px 8px 14px; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 120px;">
+    <div class="supply-chain-badge-content sleek-badge" 
+         style="background: #fff; border-radius: 18px; box-shadow: 0 2px 8px 0 rgba(60,60,60,0.10); padding: 8px 18px 8px 14px; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 120px;"
+         title="Sustainability Score: ${scoreData.score}/5${
+    tooltipContent ? "\n\n" + tooltipContent : ""
+  }">
       <span class="supply-chain-badge-title" style="font-size: 0.95em; font-weight: 600; color: #222; letter-spacing: 0.01em; margin-bottom: 2px;">Sustainability Score</span>
       <span style="display: flex; align-items: center; gap: 8px;">
         <span class="supply-chain-score" style="color: ${badgeColor}; font-size: 1.15em; font-weight: 700;">
@@ -1547,9 +2367,9 @@ function insertSupplyChainBadge(priceElement, scoreData) {
               : "N/A"
           }
         </span>
-        <span class="supply-chain-icons" style="font-size: 1.2em; display: flex; align-items: center;">${
-          scoreData.icons
-        }</span>
+        <span class="supply-chain-icons" style="font-size: 1.2em; display: flex; align-items: center;">${sustainabilityIcon} ${
+    scoreData.icons
+  }</span>
       </span>
     </div>
   `;
@@ -1905,13 +2725,18 @@ function insertSupplyChainBadge(priceElement, scoreData) {
         ? `
       <div class="supply-chain-origin">
         <h4>Manufacturing Origin</h4>
-          scoreData.manufacturingCountry.length >= 2 &&
-          scoreData.manufacturingCountry.length <= 30 &&
-          !/manufacturing|location|country|origin|made|from|produced|or|the|information|where|details|instructions|search|examine|description|text|above|below|find|mention|phrases|product|refer|listed|unknown|n\/a|not/i.test(
-            scoreData.manufacturingCountry
-          )
-            ? scoreData.manufacturingCountry
-            : "Unknown"
+        <p style="font-weight: bold; font-size: 1.2em; color: #2e7d32; text-transform: uppercase;">
+          ${
+            scoreData.manufacturingCountry &&
+            scoreData.manufacturingCountry.length >= 2 &&
+            scoreData.manufacturingCountry.length <= 30 &&
+            !/manufacturing|location|country|origin|made|from|produced|or|the|information|where|details|instructions|search|examine|description|text|above|below|find|mention|phrases|product|refer|listed|unknown|n\/a|not/i.test(
+              scoreData.manufacturingCountry
+            )
+              ? scoreData.manufacturingCountry
+              : "Unknown"
+          }
+        </p>
         }</p>
         <p class="origin-explanation">Manufacturing location affects carbon emissions, labor practices, and resource use.</p>
         ${
