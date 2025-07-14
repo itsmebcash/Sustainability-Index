@@ -1,3 +1,8 @@
+// Helper to check if current site is an allowed e-commerce domain
+function isEcommerceSite() {
+  const host = window.location.hostname.toLowerCase();
+  return ecommerceDomains.some((domain) => host.includes(domain));
+}
 // --- Safe localStorage patch for sandboxed frames ---
 (function patchLocalStorage() {
   try {
@@ -17,6 +22,58 @@
     // Ignore if we can't patch (shouldn't throw)
   }
 })();
+
+// --- Gemini AI integration ---
+async function analyzeWithGemini(
+  productTitle,
+  productDescription,
+  additionalContext = ""
+) {
+  const apiKey = "AIzaSyBs_4gqS4nC43qOAhgV5abz3h-lCY1hnWM";
+  const url =
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" +
+    apiKey;
+  const prompt = `You are a sustainability expert. Analyze the following product for supply chain transparency, sustainability certifications, materials, end-of-life options, and environmental impact. Provide a JSON object with scores (0 or 1) for each of these five criteria, and a brief explanation for each.\n\nProduct Title: ${productTitle}\n\nProduct Description: ${productDescription}\n\nAdditional Context: ${additionalContext}`;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+      }),
+    });
+    if (!response.ok) {
+      let errorText = "";
+      try {
+        errorText = await response.text();
+      } catch (e) {
+        errorText = "(Could not read error body)";
+      }
+      console.error(
+        `[Gemini] API request failed. Status: ${response.status} ${response.statusText}. Body:`,
+        errorText
+      );
+      throw new Error("Gemini API request failed");
+    }
+    const data = await response.json();
+    // Gemini returns the result in data.candidates[0].content.parts[0].text
+    const aiText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    // Try to parse JSON from the response
+    let aiScore = null;
+    try {
+      aiScore = JSON.parse(aiText);
+    } catch (e) {
+      // If not valid JSON, return raw text
+      aiScore = { explanation: aiText };
+    }
+    return aiScore;
+  } catch (error) {
+    console.error("[Gemini] Error analyzing product:", error);
+    return null;
+  }
+}
 
 // --- E-commerce domain restriction via Supabase ---
 // Replace with your Supabase project URL and anon key
@@ -40,8 +97,7 @@ async function fetchEcommerceDomains() {
     if (!response.ok) throw new Error("Failed to fetch domains");
     const data = await response.json();
     ecommerceDomains = data.map((d) => d.domain.toLowerCase());
-  } catch (e) {
-    // fallback to a default list if fetch fails
+
     ecommerceDomains = [
       "amazon.",
       "ebay.",
@@ -54,281 +110,8 @@ async function fetchEcommerceDomains() {
       "bestbuy.",
       "target.",
     ];
-  }
-}
-
-// Helper to check if current site is an allowed e-commerce domain
-function isEcommerceSite() {
-  const host = window.location.hostname.toLowerCase();
-  return ecommerceDomains.some((domain) => host.includes(domain));
-}
-
-// Truncate helper to avoid token limit errors
-function truncate(str, maxLen) {
-  if (!str) return "";
-  return str.length > maxLen ? str.slice(0, maxLen) + "..." : str;
-}
-
-// Analyze product with Groq AI, including web search summary for verification
-// Update these values with the latest Groq API endpoint and model as needed
-async function analyzeWithGroq(title, description, webSummary = "") {
-  // TODO: Replace with your actual Groq API key and endpoint if changed
-  const apiKey = "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"; // <-- Replace with your Groq API key
-  const endpoint = "https://api.groq.com/openai/v1/chat/completions"; // <-- Update if Groq docs specify a new endpoint
-  // Truncate to avoid token limit errors (adjust as needed)
-  const maxDescLen = 1000;
-  const maxWebLen = 1500;
-  const safeDescription = truncate(description, maxDescLen);
-  const safeWebSummary = truncate(webSummary, maxWebLen);
-  // Use a model name that is available to your Groq account (check Groq docs)
-  // Llama-3-70b is more capable of nuanced sustainability scoring than the 8b model
-  const model = "llama3-70b-8192"; // More powerful model for better analysis
-  // Get product-specific sustainability criteria
-  let productTypeGuidelines = "";
-  try {
-    // Import from product_types.js file if available, otherwise use default criteria
-    // productTypeGuidelines = getProductTypeSpecificGuidelines(
-    //   title,
-    //   safeDescription
-    // );
-    // Function not defined, use default criteria
-    productTypeGuidelines =
-      "Use general sustainability criteria appropriate for this product type.";
-  } catch (e) {
-    console.warn("Could not get product-specific guidelines:", e);
-    productTypeGuidelines =
-      "Use general sustainability criteria appropriate for this product type.";
-  }
-
-  const prompt = `You are a sustainability expert evaluating a product's environmental impact. YOUR ABSOLUTE PRIORITY TASK IS TO EXTRACT THE COUNTRY OF ORIGIN OR MANUFACTURING COUNTRY from the product information. 
-
-IMPORTANT: First scan the entire text for phrases like "Country of Origin: China" or "Made in Japan" or any indication of where the product was manufactured. This is your most important task.
-
-Return a JSON object with the following fields:
-
-- manufacturingCountry (CRITICAL PRIORITY: Return ONLY THE ACTUAL COUNTRY NAME (like "China", "USA", "Germany", etc.) and not descriptive phrases. Thoroughly examine the text for ANY mention of "country of origin", "manufacturing location", "made in", "from", "produced in", "manufactured in", etc. Pay special attention to labeled sections like "Country of Origin: [country]". If you find ANY country name related to manufacturing, return ONLY that country name; if multiple countries mentioned, choose the main manufacturing location)
-- verifiedScore (0-100, integer, based on all info including web search)
-- score (0-5, integer, based on product info only)
-- co2Emissions (if you can estimate, else null)
-- shippingMethod (guess if possible)
-- explanation (detailed rationale for your score - IMPORTANT: include all information about manufacturing country in your explanation, repeat the exact text about country of origin if found)
-- productType (your assessment of what type of product this is)
-
-Product Title: ${title}
-Description: ${safeDescription}
-
-Web search findings (for verification, ethical issues, brand reputation):
-${safeWebSummary}
-
-PRODUCT-SPECIFIC SUSTAINABILITY CRITERIA:
-${productTypeGuidelines}
-
-SCORING GUIDELINES - Score products according to these sustainability factors:
-
-5/5 (Excellent): 
-- Uses fully sustainable, renewable, or recycled materials
-- Carbon-neutral or negative production
-- Organic, plastic-free, or biodegradable
-- Transparent and ethical supply chain
-- Clear eco certifications (Fairtrade, FSC, GOTS, etc.)
-
-4/5 (Good):
-- Mostly sustainable materials or production methods
-- Some eco-friendly certifications
-- Reduced carbon footprint initiatives
-- Some recycled or renewable content
-- Evidence of ethical manufacturing
-
-3/5 (Average):
-- Some sustainable materials
-- Standard industry practices
-- Limited sustainability information
-- Mixed materials (some sustainable, some not)
-- Neutral environmental impact
-
-2/5 (Below Average):
-- Primarily non-renewable resources
-- Energy-intensive manufacturing
-- Minimal recycled content
-- Limited transparency
-- Some concerning materials (moderate plastic usage)
-
-1/5 (Poor):
-- Harmful materials (excess plastic, toxic chemicals)
-- High carbon footprint
-- No sustainability efforts
-- No transparency
-- Disposable or single-use product
-
-0/5 (Not Assessable):
-- Insufficient information to make assessment
-
-IMPORTANT INSTRUCTIONS:
-- Be critical and realistic - not all products deserve high scores
-- If web search reveals unethical practices or greenwashing, reduce scores accordingly
-- Use the full range of scores (1-5) - don't default to middle values
-- Products with significant plastic content should generally score lower
-- Organic and natural materials should generally score higher
-- Be specific about why you assigned the score
-- Consider both materials AND manufacturing processes in your assessment`;
-
-  try {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: model,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a critical sustainability expert specialized in evaluating products based on environmental impact, material sustainability, ethical production, and resource usage. Your assessments are accurate, differentiated, and well-researched. You prioritize factual evidence over marketing claims. Score different product types according to appropriate sustainability standards for their category.",
-          },
-          { role: "user", content: prompt },
-        ],
-        max_tokens: 1024,
-        temperature: 0.1,
-        response_format: { type: "json_object" },
-      }),
-    });
-    if (response.status === 404) {
-      // Graceful fallback: show message in UI and return null
-      console.warn(
-        "Groq API endpoint not found (404). Please check your endpoint or API key."
-      );
-      return null;
-    }
-    if (!response.ok) return null;
-    const data = await response.json();
-    const text = data.choices?.[0]?.message?.content;
-    if (!text) return null;
-    // Handle JSON response (should be direct JSON with response_format parameter)
-    let ai = null;
-
-    try {
-      // First, try direct parsing (assuming we got proper JSON)
-      ai = JSON.parse(text);
-    } catch (err) {
-      console.warn(
-        "Direct JSON parse failed, trying to extract JSON from text"
-      );
-
-      // Fallback: try to extract JSON object from text
-      let match = text.match(/\{[\s\S]*\}/);
-      if (!match) {
-        console.error("No JSON object found in response:", text);
-        return null;
-      }
-
-      try {
-        ai = JSON.parse(match[0]);
-      } catch (err) {
-        // Attempt to fix common JSON issues from LLMs
-        let fixed = match[0]
-          .replace(/([,{\s])(\w+):/g, '$1"$2":') // quote property names
-          .replace(/'/g, '"') // single to double quotes
-          .replace(/,\s*}/g, "}"); // remove trailing commas
-
-        try {
-          ai = JSON.parse(fixed);
-        } catch (err2) {
-          console.error("JSON parsing failed even after fixes:", err2, fixed);
-          return null;
-        }
-      }
-    }
-
-    // Validate the AI response structure
-    if (!ai || typeof ai !== "object") {
-      console.error("Invalid AI response structure:", ai);
-      return null;
-    }
-    // Validate and normalize scores
-    if (ai.score === undefined || ai.score === null) {
-      console.warn("Missing score in AI response, defaulting to 0");
-      ai.score = 0;
-    } else {
-      // Ensure score is an integer between 0-5
-      ai.score = Math.min(5, Math.max(0, Math.round(Number(ai.score))));
-    }
-
-    if (ai.verifiedScore === undefined || ai.verifiedScore === null) {
-      console.warn("Missing verifiedScore in AI response");
-      ai.verifiedScore = null;
-    } else {
-      // Ensure verifiedScore is an integer between 0-100
-      ai.verifiedScore = Math.min(
-        100,
-        Math.max(0, Math.round(Number(ai.verifiedScore)))
-      );
-    }
-
-    // Ensure explanation exists
-    if (!ai.explanation) {
-      ai.explanation = "No detailed explanation available.";
-    }
-
-    // Add icons for badge
-    ai.icons = getRatingIcons(ai.score);
-    ai.webSummary = webSummary;
-
-    // Log the final score for detailed debugging
-    logSustainabilityScoreDebug(
-      title,
-      ai.score,
-      ai.explanation,
-      ai.productType
-    );
-
-    // Debug logger for sustainability scores - helps identify if scores are differentiated
-    function logSustainabilityScoreDebug(
-      title,
-      score,
-      explanation,
-      productType
-    ) {
-      const shortTitle = title?.substring(0, 30) || "Unknown product";
-      const formattedScore = score !== null ? score : "N/A";
-      const shortExplanation =
-        explanation?.substring(0, 100) || "No explanation";
-
-      console.log(
-        `%c Sustainability Score Debug %c ${formattedScore}/5 %c ${shortTitle}`,
-        "background: #2c3e50; color: white; padding: 2px 0;",
-        `background: ${
-          score >= 4
-            ? "#4caf50"
-            : score >= 3
-            ? "#ff9800"
-            : score >= 1
-            ? "#f44336"
-            : "#9e9e9e"
-        }; color: white; padding: 2px 4px;`,
-        "background: #f8f9fa; color: #333; padding: 2px 0;"
-      );
-
-      console.log(
-        `Product Type: ${
-          productType || "Unknown"
-        }\nExplanation: ${shortExplanation}...`
-      );
-    }
-    // Call this debug function after getting AI analysis
-    logSustainabilityScoreDebug(
-      title,
-      ai.score,
-      ai.explanation,
-      ai.productType
-    );
-
-    return ai;
-  } catch (e) {
-    // Show a more user-friendly error in the console
-    console.error("Groq AI error (network or parsing):", e);
-    return null;
+  } catch (error) {
+    console.error("Error fetching ecommerce domains:", error);
   }
 }
 
@@ -1630,6 +1413,100 @@ function detectProductPage() {
       // Extract product details (materials, specifications, etc.)
       const productDetails = extractProductDetails();
 
+      // Direct DOM search for country of origin information (specific to some websites)
+      console.log("[DEBUG] Performing direct DOM search for country of origin");
+      const originSelectors = [
+        ".product-details",
+        ".product-specs",
+        ".product-specifications",
+        ".product-information",
+        ".additional-information",
+        ".product-attributes",
+        '[data-testid="product-details"]',
+        "#product-details",
+        "#product-specs",
+        "table", // Often country info is in a table
+        "dl", // Definition lists often contain product specs
+      ];
+
+      let domOriginFound = false;
+      for (const selector of originSelectors) {
+        const elements = document.querySelectorAll(selector);
+        for (const element of elements) {
+          // Normalize text for easier matching
+          const text = element.textContent.replace(/\s+/g, " ").trim();
+          if (/country of origin\s*:/i.test(text)) {
+            console.log(
+              "[DEBUG] Found DOM element with country of origin:",
+              text
+            );
+            // Try direct match
+            let countryMatch = text.match(
+              /[Cc]ountry\s*of\s*[Oo]rigin\s*:\s*([A-Za-z\s\-']{2,30})/
+            );
+            if (countryMatch && countryMatch[1]) {
+              window.domDetectedCountry = countryMatch[1].trim();
+              console.log(
+                "[DEBUG] FOUND COUNTRY IN DOM:",
+                window.domDetectedCountry
+              );
+              domOriginFound = true;
+              break;
+            }
+            // If not found, check child nodes (e.g., table cells, definition lists)
+            if (
+              !domOriginFound &&
+              element.children &&
+              element.children.length > 0
+            ) {
+              for (const child of element.children) {
+                const childText = child.textContent.replace(/\s+/g, " ").trim();
+                if (/country of origin\s*:/i.test(childText)) {
+                  let childMatch = childText.match(
+                    /[Cc]ountry\s*of\s*[Oo]rigin\s*:\s*([A-Za-z\s\-']{2,30})/
+                  );
+                  if (childMatch && childMatch[1]) {
+                    window.domDetectedCountry = childMatch[1].trim();
+                    console.log(
+                      "[DEBUG] FOUND COUNTRY IN DOM CHILD:",
+                      window.domDetectedCountry
+                    );
+                    domOriginFound = true;
+                    break;
+                  }
+                }
+                // Also check for table rows/cells
+                if (!domOriginFound && child.tagName === "TR") {
+                  const cells = child.querySelectorAll("td, th");
+                  for (const cell of cells) {
+                    const cellText = cell.textContent
+                      .replace(/\s+/g, " ")
+                      .trim();
+                    if (/country of origin\s*:/i.test(cellText)) {
+                      let cellMatch = cellText.match(
+                        /[Cc]ountry\s*of\s*[Oo]rigin\s*:\s*([A-Za-z\s\-']{2,30})/
+                      );
+                      if (cellMatch && cellMatch[1]) {
+                        window.domDetectedCountry = cellMatch[1].trim();
+                        console.log(
+                          "[DEBUG] FOUND COUNTRY IN DOM TABLE CELL:",
+                          window.domDetectedCountry
+                        );
+                        domOriginFound = true;
+                        break;
+                      }
+                    }
+                  }
+                  if (domOriginFound) break;
+                }
+              }
+            }
+          }
+          if (domOriginFound) break;
+        }
+        if (domOriginFound) break;
+      }
+
       // Extract sustainability claims or eco labels if available
       const sustainabilityClaims = extractSustainabilityClaims();
 
@@ -1651,16 +1528,121 @@ ${sustainabilityClaims}
         enhancedDescription.substring(0, 300) + "..."
       );
 
-      // Check if the description contains 'country of origin' for debugging
-      if (/country of origin/i.test(enhancedDescription)) {
-        console.log(
-          "[DEBUG] Found 'country of origin' in the product description"
-        );
+      // Log the full enhanced description for debugging
+      console.log("[DEBUG] FULL Enhanced description:", enhancedDescription);
+
+      // IMPROVED COUNTRY DETECTION: Search line by line for country of origin
+      let explicitCountryFound = false;
+      window.detectedCountry = null; // Reset global country detection
+      const allLines = enhancedDescription.split(/[\r\n]+/);
+
+      // Direct check for the common "Country of origin: Thailand" format
+      for (const line of allLines) {
+        // First check for exact format seen in your website
+        if (/Country of origin: [A-Za-z\s\-']{2,30}/i.test(line)) {
+          console.log(
+            "[DEBUG] DIRECT MATCH for 'Country of origin: X' format:",
+            line
+          );
+          const match = line.match(/Country of origin: ([A-Za-z\s\-']{2,30})/i);
+          if (match && match[1]) {
+            window.detectedCountry = match[1].trim();
+            console.log(
+              "[DEBUG] FOUND EXACT COUNTRY FORMAT:",
+              window.detectedCountry
+            );
+            explicitCountryFound = true;
+            break;
+          }
+        }
+
+        // Then check other formats
+        if (/country|origin|made in|manufactured/i.test(line)) {
+          console.log("[DEBUG] Potential country line:", line);
+
+          // Check for explicit country of origin patterns with multiple format variations
+          const countryPatterns = [
+            /country\s*of\s*origin\s*[:\-–=]?\s*([A-Za-z\s\-']{2,30})/i,
+            /country\s*of\s*origin[:][ ]([A-Za-z\s\-']{2,30})/i, // Exact format in website
+            /made\s*in\s*([A-Za-z\s\-']{2,30})/i,
+            /manufactured\s*in\s*([A-Za-z\s\-']{2,30})/i,
+            /origin\s*[:\-–=]?\s*([A-Za-z\s\-']{2,30})/i,
+            /product\s*of\s*([A-Za-z\s\-']{2,30})/i,
+          ];
+
+          for (const pattern of countryPatterns) {
+            const match = line.match(pattern);
+            if (match && match[1]) {
+              const country = match[1].trim();
+              console.log("[DEBUG] FOUND COUNTRY:", country, "in line:", line);
+              explicitCountryFound = true;
+              // Store this for later use
+              window.detectedCountry = country;
+              break;
+            }
+          }
+
+          if (explicitCountryFound) break;
+        }
+      }
+
+      // Check for "Additional Information" section that often contains country of origin
+      if (!explicitCountryFound) {
+        console.log("[DEBUG] Checking for Additional Information section");
+        if (/Additional [Ii]nformation/i.test(enhancedDescription)) {
+          console.log("[DEBUG] Found 'Additional Information' section");
+
+          // Extract content after "Additional Information" heading
+          const additionalInfoMatch = enhancedDescription.match(
+            /Additional [Ii]nformation[:\s\n]*([\s\S]*?)(\n\s*\n|$)/i
+          );
+          if (additionalInfoMatch && additionalInfoMatch[1]) {
+            const additionalInfoSection = additionalInfoMatch[1];
+            console.log(
+              "[DEBUG] Additional Information section content:",
+              additionalInfoSection
+            );
+
+            // Try specific regex for "Country of origin: Thailand" format
+            const countryMatch = additionalInfoSection.match(
+              /[Cc]ountry\s*of\s*origin\s*:\s*([A-Za-z\s\-']{2,30})/
+            );
+            if (countryMatch && countryMatch[1]) {
+              window.detectedCountry = countryMatch[1].trim();
+              console.log(
+                "[DEBUG] FOUND COUNTRY IN ADDITIONAL INFO:",
+                window.detectedCountry
+              );
+              explicitCountryFound = true;
+            }
+          }
+        }
+      }
+
+      // Legacy check (keep for backward compatibility)
+      if (
+        !explicitCountryFound &&
+        /country of origin/i.test(enhancedDescription)
+      ) {
+        console.log("[DEBUG] Using legacy country detection method");
         // Extract the line containing 'country of origin'
         const lines = enhancedDescription.split(/[\n\r]+/);
         for (const line of lines) {
           if (/country of origin/i.test(line)) {
-            console.log("[DEBUG] Country of origin line:", line);
+            console.log("[DEBUG] Legacy country of origin line:", line);
+
+            // Try one more time with a simpler regex
+            const simpleMatch = line.match(
+              /[Cc]ountry\s*of\s*origin\s*:\s*(\w+)/
+            );
+            if (simpleMatch && simpleMatch[1]) {
+              window.detectedCountry = simpleMatch[1].trim();
+              console.log(
+                "[DEBUG] FOUND COUNTRY WITH SIMPLE REGEX:",
+                window.detectedCountry
+              );
+              explicitCountryFound = true;
+            }
           }
         }
       }
@@ -1676,7 +1658,7 @@ ${sustainabilityClaims}
       );
 
       // Analyze with Groq AI using only local product description and details
-      analyzeWithGroq(productTitle, enhancedDescription, "")
+      analyzeWithGemini(productTitle, enhancedDescription, "")
         .then((aiScore) => {
           // --- Manufacturing origin logic: Only show if explicitly found ---
           let explicitCountry = null;
@@ -1733,7 +1715,24 @@ ${sustainabilityClaims}
           }
 
           if (aiScore) {
-            if (explicitCountry) {
+            // Use explicit country with priority for our different detection methods
+            if (window.domDetectedCountry) {
+              console.log(
+                "[DEBUG] Using explicitly detected country from DOM elements:",
+                window.domDetectedCountry
+              );
+              aiScore.manufacturingCountry = window.domDetectedCountry;
+            } else if (window.detectedCountry) {
+              console.log(
+                "[DEBUG] Using explicitly detected country from line-by-line scan:",
+                window.detectedCountry
+              );
+              aiScore.manufacturingCountry = window.detectedCountry;
+            } else if (explicitCountry) {
+              console.log(
+                "[DEBUG] Using country from sustainability score analysis:",
+                explicitCountry
+              );
               aiScore.manufacturingCountry = explicitCountry;
             } else {
               aiScore.manufacturingCountry = null;
@@ -1786,7 +1785,7 @@ ${sustainabilityClaims}
       console.error("Error processing product page:", error);
       // Fallback to body if there's an error
       try {
-        analyzeWithGroq(document.title, "")
+        analyzeWithGemini(document.title, "")
           .then((aiScore) => {
             if (aiScore) {
               insertSupplyChainBadge(document.body, aiScore);
@@ -2127,81 +2126,47 @@ function insertSupplyChainBadge(priceElement, scoreData) {
     badgeEndOfLifePoints = sustainabilityData.endOfLife.score;
     badgeEnvPoints = sustainabilityData.environmentalImpact.score;
 
-    console.log(
-      "[DEBUG] Using sustainability score breakdown for badge",
-      JSON.stringify({
-        origin: badgeOriginPoints,
-        certifications: badgeCertPoints,
-        materials: badgeMaterialPoints,
-        endOfLife: badgeEndOfLifePoints,
-        environment: badgeEnvPoints,
-      })
-    );
+    console
+      .log
+      // ...existing code...
+      ();
 
-    // Log evidence for each criterion
-    if (badgeOriginPoints)
-      console.log(
-        "[BADGE] Origin evidence:",
-        sustainabilityData.originMentioned.evidence
-      );
-    if (badgeCertPoints)
-      console.log(
-        "[BADGE] Certification evidence:",
-        sustainabilityData.certifications.evidence
-      );
-    if (badgeMaterialPoints)
-      console.log(
-        "[BADGE] Material evidence:",
-        sustainabilityData.sustainableMaterials.evidence
-      );
-    if (badgeEndOfLifePoints)
-      console.log(
-        "[BADGE] End-of-Life evidence:",
-        sustainabilityData.endOfLife.evidence
-      );
-    if (badgeEnvPoints)
-      console.log(
-        "[BADGE] Environmental impact evidence:",
-        sustainabilityData.environmentalImpact.evidence
-      );
-  } else {
-    // Legacy fallback calculation
-    // Calculate score based on five criteria only (removed web verification)
-    badgeOriginPoints =
+    // Determine country to display
+    let displayCountry = null;
+    if (
       scoreData.manufacturingCountry &&
-      scoreData.manufacturingCountry !== "Unknown"
-        ? 1
-        : 0;
-
-    // Use the same transparency logic for consistency
-    const badgeSupplyChainDetails = generateSupplyChainDetails(scoreData.score);
-    if (badgeSupplyChainDetails.transparency === "High")
-      badgeTransparencyPoints = 1;
-    else if (badgeSupplyChainDetails.transparency === "Good")
-      badgeTransparencyPoints = 0.5; // Changed to 0.5 max for partial transparency
-    else if (badgeSupplyChainDetails.transparency === "Medium")
-      badgeTransparencyPoints = 0.5;
-    else if (badgeSupplyChainDetails.transparency === "Low")
-      badgeTransparencyPoints = 0.5; // Even low transparency gets partial credit
-    else badgeTransparencyPoints = 0;
-
-    // Each criterion is worth exactly 1 point max, with strict certification matching
-    badgeCertPoints =
-      scoreData.explanation &&
-      /GOTS|OEKO[\-\s]?TEX|FSC|B\s*Corp|B\s*Corporation|Fairtrade|Fair\s*Trade|USDA\s*Organic|Rainforest\s*Alliance|Cradle\s*to\s*Cradle|Energy\s*Star|LEED|Green\s*Seal|certified\s*organic|eco[\-\s]?cert|BlueSign|Ecolabel|EU\s*Flower|Nordic\s*Swan/i.test(
-        scoreData.explanation
+      typeof scoreData.manufacturingCountry === "string" &&
+      scoreData.manufacturingCountry.trim().length > 0 &&
+      !/unknown|n\/a|not specified|not available|unavailable/i.test(
+        scoreData.manufacturingCountry
       )
-        ? 1
-        : 0;
+    ) {
+      displayCountry = scoreData.manufacturingCountry.trim();
+    }
 
-    // Strict material sustainability check
-    badgeMaterialPoints =
-      scoreData.explanation &&
-      /sustainable\s*material|recycled\s*(?:content|material|fabric|plastic|paper|glass|metal)|organic\s*(?:cotton|material|fabric|fiber)|bamboo\s*(?:fiber|material)|eco[\-\s]?friendly\s*material|biodegradable\s*material|renewable\s*(?:material|resource)|natural\s*(?:fiber|material)s?(?!\s*gas)|sustainable\s*(?:wood|timber|paper|material|cotton|fabric)|ethically\s*sourced\s*(?:material|ingredient)|plant[\-\s]based/i.test(
-        scoreData.explanation
-      )
-        ? 1
-        : 0;
+    // If no country detected, show 'Unknown'
+    if (!displayCountry) {
+      displayCountry = "Unknown";
+    }
+
+    // Example: update badge DOM (replace with your actual badge rendering logic)
+    let badge = document.getElementById("supply-chain-badge");
+    if (!badge) {
+      badge = document.createElement("div");
+      badge.id = "supply-chain-badge";
+      badge.className = "supply-chain-badge";
+      badge.style.display = settings.enabled ? "flex" : "none";
+      if (priceElement && priceElement.parentNode) {
+        priceElement.parentNode.insertBefore(badge, priceElement.nextSibling);
+      }
+    }
+    // ...existing code...
+    scoreData.explanation &&
+    /sustainable\s*material|recycled\s*(?:content|material|fabric|plastic|paper|glass|metal)|organic\s*(?:cotton|material|fabric|fiber)|bamboo\s*(?:fiber|material)|eco[\-\s]?friendly\s*material|biodegradable\s*material|renewable\s*(?:material|resource)|natural\s*(?:fiber|material)s?(?!\s*gas)|sustainable\s*(?:wood|timber|paper|material|cotton|fabric)|ethically\s*sourced\s*(?:material|ingredient)|plant[\-\s]based/i.test(
+      scoreData.explanation
+    )
+      ? 1
+      : 0;
 
     // Strict environmental impact check
     badgeEnvPoints =
@@ -2737,7 +2702,6 @@ function insertSupplyChainBadge(priceElement, scoreData) {
               : "Unknown"
           }
         </p>
-        }</p>
         <p class="origin-explanation">Manufacturing location affects carbon emissions, labor practices, and resource use.</p>
         ${
           scoreData.co2Emissions
