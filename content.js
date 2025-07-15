@@ -47,19 +47,6 @@ async function fetchEcommerceDomains() {
     if (!response.ok) throw new Error("Failed to fetch domains");
     const data = await response.json();
     ecommerceDomains = data.map((d) => d.domain.toLowerCase());
-
-    ecommerceDomains = [
-      "amazon.",
-      "ebay.",
-      "aliexpress.",
-      "temu.",
-      "walmart.",
-      "etsy.",
-      "flipkart.",
-      "rakuten.",
-      "bestbuy.",
-      "target.",
-    ];
   } catch (error) {
     console.error("Error fetching ecommerce domains:", error);
   }
@@ -139,11 +126,13 @@ async function calculateSustainabilityScore(productText) {
       }
 
       // Calculate total score
+      // Only add End-of-Life point if sustainable end-of-life options detected
+      const endOfLifePoint = sustainabilityScore.endOfLife.score === 1 ? 1 : 0;
       sustainabilityScore.totalScore =
         sustainabilityScore.originMentioned.score +
         sustainabilityScore.certifications.score +
         sustainabilityScore.sustainableMaterials.score +
-        sustainabilityScore.endOfLife.score +
+        endOfLifePoint +
         sustainabilityScore.environmentalImpact.score;
 
       sustainabilityScore.totalConfidence = 0.9;
@@ -1479,10 +1468,59 @@ ${sustainabilityClaims}
         manufacturingCountry
       );
 
-      // Calculate sustainability score (without AI country detection)
-      const sustainabilityScoreData = {
-        manufacturingCountry,
-        // ...other fields can be filled as before or left as placeholders...
+      // Analyze with Groq AI
+      // Debug: Log what is sent to Groq for material analysis
+      console.log(
+        "[DEBUG][Groq] Sending to Groq for material analysis:",
+        enhancedDescription
+      );
+      const aiScore = await analyzeWithGroqAI(enhancedDescription);
+      // Debug: Log what is received from Groq for material analysis
+      console.log(
+        "[DEBUG][Groq] Received from Groq for material analysis:",
+        aiScore
+      );
+
+      // Compose scoreData using Groq AI results
+      // Use regex-detected country only (remove AI country detection)
+      // Map Groq AI environmental impact score to impact level
+      let envImpactLevel = "unable";
+      if (
+        aiScore.environmentalImpact &&
+        typeof aiScore.environmentalImpact.score === "number"
+      ) {
+        if (aiScore.environmentalImpact.score === 1) {
+          envImpactLevel = "low";
+        } else if (aiScore.environmentalImpact.score === -1) {
+          envImpactLevel = "high";
+        } else if (aiScore.environmentalImpact.score === 0.5) {
+          envImpactLevel = "medium";
+        } else {
+          envImpactLevel = "unable";
+        }
+      }
+      const scoreData = {
+        manufacturingCountry: manufacturingCountry, // Only use regex result
+        sustainableMaterials:
+          aiScore.materials && typeof aiScore.materials.score === "number"
+            ? aiScore.materials.score
+            : 0,
+        endOfLife:
+          aiScore.endOfLife && typeof aiScore.endOfLife.score === "number"
+            ? aiScore.endOfLife.score
+            : 0,
+        certifications:
+          aiScore.materials &&
+          typeof aiScore.materials.score === "number" &&
+          aiScore.materials.score === 1
+            ? aiScore.certifications &&
+              typeof aiScore.certifications.score === "number"
+              ? aiScore.certifications.score
+              : 0
+            : 0,
+        environmentalImpact: envImpactLevel,
+        explanation: enhancedDescription,
+        // Add other fields as needed from aiScore
       };
 
       // Log full text for debugging
@@ -1490,61 +1528,27 @@ ${sustainabilityClaims}
         "[DEBUG] Full product description for scoring:",
         enhancedDescription.substring(0, 500) + "..."
       );
-
-      // Debug: Log detected origin, certifications, and sustainable materials
       console.log(
-        "[DEBUG] Origin of the product:",
-        sustainabilityScoreData.manufacturingCountry || "Not found"
+        "[DEBUG] Groq AI sustainable materials score:",
+        scoreData.sustainableMaterials
       );
 
       // Display sustainability score and manufacturing origin in badge
-      insertSupplyChainBadge(priceElement, sustainabilityScoreData);
+      insertSupplyChainBadge(priceElement, scoreData);
     } catch (error) {
       console.error("Error processing product page:", error);
       // Fallback to body if there's an error
+      // Fallback to body if there's an error
       try {
-        analyzeWithGroqAI(document.title)
-          .then((aiScore) => {
-            if (aiScore) {
-              // Convert Groq AI format to the format expected by insertSupplyChainBadge
-              const formattedScore = {
-                score:
-                  aiScore.origin.score +
-                  aiScore.certifications.score +
-                  aiScore.materials.score +
-                  aiScore.endOfLife.score +
-                  aiScore.environmentalImpact.score,
-                verifiedScore: null,
-                manufacturingCountry: aiScore.manufacturingCountry || null,
-                co2Emissions: null,
-                shippingMethod: null,
-                icons: "",
-                explanation: "AI-analyzed sustainability data.",
-              };
-              insertSupplyChainBadge(document.body, formattedScore);
-            } else {
-              insertSupplyChainBadge(document.body, {
-                score: null,
-                verifiedScore: null,
-                manufacturingCountry: null,
-                co2Emissions: null,
-                shippingMethod: null,
-                icons: "",
-                explanation: "No sustainability data available.",
-              });
-            }
-          })
-          .catch(() => {
-            insertSupplyChainBadge(document.body, {
-              score: null,
-              verifiedScore: null,
-              manufacturingCountry: null,
-              co2Emissions: null,
-              shippingMethod: null,
-              icons: "",
-              explanation: "No sustainability data available.",
-            });
-          });
+        insertSupplyChainBadge(document.body, {
+          score: null,
+          verifiedScore: null,
+          manufacturingCountry: null,
+          co2Emissions: null,
+          shippingMethod: null,
+          icons: "",
+          explanation: "No sustainability data available.",
+        });
       } catch (fallbackError) {
         console.error("Fallback error:", fallbackError);
       }
@@ -1898,28 +1902,65 @@ function generateSupplyChainDetails(score) {
 
 // Insert supply chain badge next to price
 function insertSupplyChainBadge(priceElement, scoreData) {
-  // Use the same score for both badge and modal
-  let badgeOriginPoints = scoreData.originPoints || 0;
-  let badgeCertPoints = scoreData.certPoints || 0;
-  let badgeMaterialPoints = scoreData.materialPoints || 0;
-  let badgeEndOfLifePoints = scoreData.endOfLifePoints || 0;
-  let badgeEnvPoints = scoreData.envPoints || 0;
-  let syncedScore = scoreData.score || 0;
+  // --- Single Source of Truth for Score Calculation ---
+  // Calculate points for each section
+  var originPoints =
+    scoreData.manufacturingCountry &&
+    scoreData.manufacturingCountry !== "Unknown"
+      ? 1
+      : 0;
 
-  // Log detailed score calculation for badge
-  console.log(`Badge sustainability score calculation (synced):
-    - Origin Mentioned: ${badgeOriginPoints} point(s)
-    - Certifications: ${badgeCertPoints} point(s)
-    - Sustainable Materials: ${badgeMaterialPoints} point(s)
-    - End-of-Life: ${badgeEndOfLifePoints} point(s)
-    - Environmental Impact: ${badgeEnvPoints} point(s)
-    = Total: ${syncedScore}/5
-  `);
+  // Only show certifications if sustainable materials is detected
+  var certPoints =
+    scoreData.sustainableMaterials === 1 &&
+    typeof scoreData.certifications === "number"
+      ? scoreData.certifications
+      : 0;
+
+  // Use Groq AI sustainable materials score directly
+  var materialPoints =
+    typeof scoreData.sustainableMaterials === "number"
+      ? scoreData.sustainableMaterials
+      : 0;
+
+  // Use Groq AI end-of-life score directly
+  var endOfLifePoints =
+    typeof scoreData.endOfLife === "number" ? scoreData.endOfLife : 0;
+  // Use Groq AI environmental impact score directly
+  // Score mapping: Low Impact +1, High Impact -1, Medium Impact +0.5, Unable to analyze 0
+  var envPoints = 0;
+  if (scoreData.environmentalImpact === "low") {
+    envPoints = 1;
+  } else if (scoreData.environmentalImpact === "high") {
+    envPoints = -1;
+  } else if (scoreData.environmentalImpact === "medium") {
+    envPoints = 0.5;
+  } else {
+    envPoints = 0;
+  }
+
+  // Calculate total score (0-5)
+  var calculatedScore =
+    originPoints + certPoints + materialPoints + endOfLifePoints + envPoints;
+
+  // Ensure score is within range 0-5, no half points
+  calculatedScore = Math.max(0, Math.min(5, Math.floor(calculatedScore)));
+
+  // Store the calculated score in scoreData
+  scoreData.score = calculatedScore;
+
+  // Log detailed score calculation for badge and modal
+  console.log(
+    `Sustainability score calculation (single source):\n  - Origin Mentioned: ${originPoints} point(s)\n  - Certifications: ${certPoints} point(s)\n  - Sustainable Materials: ${materialPoints} point(s)\n  - End-of-Life: ${endOfLifePoints} point(s)\n  - Environmental Impact: ${envPoints} point(s)\n  = Total: ${calculatedScore}/5\n`
+  );
+
+  // Use scoreData.score for both badge and modal rendering
+  // ...existing code for badge and modal rendering, using scoreData.score...
 
   // Update the scoreData object with our synced score
-  scoreData.calculatedScore = syncedScore;
-  scoreData.score = syncedScore;
-  scoreData.icons = getRatingIcons(Math.round(syncedScore));
+  scoreData.calculatedScore = calculatedScore;
+  scoreData.score = calculatedScore;
+  scoreData.icons = getRatingIcons(Math.round(calculatedScore));
 
   // Store confidence data for future analysis if available
   if (scoreData.sustainabilityScoreData?.confidenceLevels) {
@@ -1936,7 +1977,7 @@ function insertSupplyChainBadge(priceElement, scoreData) {
         timestamp: new Date().toISOString(),
         levels: scoreData.sustainabilityScoreData.confidenceLevels,
         totalConfidence: scoreData.sustainabilityScoreData.totalConfidence || 0,
-        score: syncedScore,
+        score: calculatedScore,
       };
 
       // Store in localStorage for trend analysis
@@ -1985,11 +2026,11 @@ function insertSupplyChainBadge(priceElement, scoreData) {
 
   // Choose appropriate icon based on score
   let sustainabilityIcon = "🍃"; // Default
-  if (syncedScore >= 4) {
+  if (calculatedScore >= 4) {
     sustainabilityIcon = "🌱"; // Excellent sustainability score
-  } else if (syncedScore >= 2) {
+  } else if (calculatedScore >= 2) {
     sustainabilityIcon = "♻️"; // Moderate sustainability score
-  } else if (syncedScore >= 1) {
+  } else if (calculatedScore >= 1) {
     sustainabilityIcon = "🌍"; // Low sustainability score
   } else {
     sustainabilityIcon = "⚠️"; // No sustainability info
@@ -2090,13 +2131,7 @@ function insertSupplyChainBadge(priceElement, scoreData) {
   );
 
   // Show how the score is being calculated instead of a text summary
-  // --- Calculate points for each section - EXACTLY the same logic as in badge ---
-  let originPoints =
-    scoreData.manufacturingCountry &&
-    scoreData.manufacturingCountry !== "Unknown"
-      ? 1
-      : 0;
-
+  // Use the already-declared variables for modal as well
   // Transparency is worth max 1 point, but can be 0.5 for partial transparency
   let transparencyPoints = 0;
   if (supplyChainDetails.transparency === "High") transparencyPoints = 1;
@@ -2106,31 +2141,6 @@ function insertSupplyChainBadge(priceElement, scoreData) {
     transparencyPoints = 0.5;
   else if (supplyChainDetails.transparency === "Low") transparencyPoints = 0.5;
   else transparencyPoints = 0;
-
-  // Each criterion is worth exactly 1 point max, using strict matches
-  let certPoints =
-    scoreData.explanation &&
-    /GOTS|OEKO[\-\s]?TEX|FSC|B\s*Corp|B\s*Corporation|Fairtrade|Fair\s*Trade|USDA\s*Organic|Rainforest\s*Alliance|Cradle\s*to\s*Cradle|Energy\s*Star|LEED|Green\s*Seal|certified\s*organic|eco[\-\s]?cert|BlueSign|Ecolabel|EU\s*Flower|Nordic\s*Swan/i.test(
-      scoreData.explanation
-    )
-      ? 1
-      : 0;
-
-  let materialPoints =
-    scoreData.explanation &&
-    /sustainable\s*material|recycled\s*(?:content|material|fabric|plastic|paper|glass|metal)|organic\s*(?:cotton|material|fabric|fiber)|bamboo\s*(?:fiber|material)|eco[\-\s]?friendly\s*material|biodegradable\s*material|renewable\s*(?:material|resource)|natural\s*(?:fiber|material)s?(?!\s*gas)|sustainable\s*(?:wood|timber|paper|material|cotton|fabric)|ethically\s*sourced\s*(?:material|ingredient)|plant[\-\s]based/i.test(
-      scoreData.explanation
-    )
-      ? 1
-      : 0;
-
-  let envPoints =
-    scoreData.explanation &&
-    /carbon\s*(?:footprint|neutral|negative|offset)|(?:reduced|lower|less)\s*(?:water|energy)\s*(?:usage|consumption)|zero\s*(?:waste|emission)|(?:reduced|lower|less)\s*(?:CO2|carbon dioxide|greenhouse gas|GHG)|environmental\s*impact\s*(?:statement|assessment)|life\s*cycle\s*assessment|(?:water|energy)\s*saving|climate\s*(?:friendly|positive|impact)|(?:renewable|green|clean)\s*energy/i.test(
-      scoreData.explanation
-    )
-      ? 1
-      : 0;
 
   // Web verification is tracked but NOT included in score calculation
   // It's only used to verify the claims in the product description
@@ -2144,66 +2154,18 @@ function insertSupplyChainBadge(priceElement, scoreData) {
     webPoints = Math.round(webPoints * 100) / 100;
   }
 
-  // ROBUSTLY RECALCULATE TOTAL SCORE based only on the 5 criteria
-  // Sum all points from each category (excluding web verification)
-  // Calculate score based on exactly five criteria, each worth exactly 1 point
-  let calculatedScore =
-    originPoints +
-    certPoints +
-    materialPoints +
-    badgeEndOfLifePoints +
-    envPoints;
-
-  // Ensure score is within range 0-5, no half points
-  calculatedScore = Math.max(0, Math.min(5, Math.floor(calculatedScore)));
-
-  // Log detailed score calculation
-  console.log(`Modal sustainability score calculation:
-    - Origin Information: ${originPoints} point(s) [Country: ${
-    scoreData.manufacturingCountry || "Not detected"
-  }]
-    - Supply Chain Transparency: ${transparencyPoints} point(s)
-    - Certifications: ${certPoints} point(s)
-    - Material Sourcing: ${materialPoints} point(s)
-    - Environmental Practices: ${envPoints} point(s)
-    = Total: ${calculatedScore}/5 (Web verification excluded from score)
-  `);
-
-  // Add comprehensive debug log about manufacturing country detection
-  console.log(`[DEBUG] Manufacturing Country Detection:
-    - Final country value: ${scoreData.manufacturingCountry || "Not detected"}
-    - Country source: ${
-      scoreData.manufacturingCountry
-        ? scoreData.brandOriginCountry
-          ? "Web search/AI"
-          : "Product description"
-        : "Not found"
-    }
-    - Points awarded for origin: ${originPoints}
-    - Product description available: ${scoreData.explanation ? "Yes" : "No"}
-    - Description length: ${
-      scoreData.explanation ? scoreData.explanation.length : 0
-    } characters
-  `);
-
-  // Store original score for logging
-  const originalScore = scoreData.score;
-
-  // Update the scoreData object with our calculated score for reference
-  scoreData.calculatedScore = calculatedScore;
-
-  // Update the display score to use our calculated value
-  // This ensures both the badge and modal use the same calculated score
-  scoreData.score = calculatedScore;
-
-  // Update icons to match new score (using rounded value for icons)
-  scoreData.icons = getRatingIcons(Math.round(scoreData.score));
-
-  console.log(
-    `Score updated: ${originalScore} → ${scoreData.score} (5 criteria only, no web verification)`
-  );
-
   // Compose the breakdown UI ("How This Rating Is Calculated" section removed as requested)
+
+  // --- Modal details: fix sustainable materials and end-of-life explanation ---
+  let sustainableMaterialsText = "No clear sustainable materials found";
+  if (scoreData.sustainableMaterials === 1) {
+    sustainableMaterialsText = "Sustainable materials detected";
+  }
+
+  let endOfLifeText = "No end-of-life information found";
+  if (scoreData.endOfLife === 1) {
+    endOfLifeText = "Sustainable end-of-life options detected";
+  }
   details.innerHTML = `
     <div class="supply-chain-header">
       <h3>Sustainability Index: <br> <br> <span style="color: ${badgeColor}">${
@@ -2215,65 +2177,43 @@ function insertSupplyChainBadge(priceElement, scoreData) {
       <div class="score-breakdown">
         <h4 style="margin-bottom: 8px;">How this score is calculated:</h4>
         <ul style="list-style: disc inside; margin:0; padding-left: 18px;">
-          <li><b>Origin Mentioned</b> (${originPoints} point):
+          <li><b>Product Origin</b> (${originPoints} point):
             <span>
               ${
                 scoreData.manufacturingCountry &&
                 scoreData.manufacturingCountry !== "Unknown"
-                  ? `Manufacturing country detected after key phrases: <b>${scoreData.manufacturingCountry}</b>`
-                  : "No manufacturing origin information found after key phrases"
+                  ? `<b>${scoreData.manufacturingCountry}</b>`
+                  : "No manufacturing origin detected"
+              }
+            </span>
+          </li>
+          <li><b>Sustainable Materials</b> (${materialPoints} point):
+            <span>${sustainableMaterialsText}</span>
+          </li>
+          <li><b>End-of-Life</b> (${scoreData.endOfLife} point):
+            <span>${endOfLifeText}</span>
+          </li>
+          <li><b>Environmental Impact</b> (${envPoints} point):
+            <span>
+              ${
+                scoreData.environmentalImpact === "low"
+                  ? "Low environmental impact materials detected"
+                  : scoreData.environmentalImpact === "high"
+                  ? "High environmental impact materials detected"
+                  : scoreData.environmentalImpact === "medium"
+                  ? "Medium environmental impact materials detected"
+                  : "Unable to measure the environmental impact"
               }
             </span>
           </li>
           <li><b>Certifications</b> (${certPoints} point):
             <span>
               ${
-                scoreData.explanation &&
-                /GOTS|OEKO[\-\s]?TEX|FSC|B\s*Corp|B\s*Corporation|Fairtrade|Fair\s*Trade|USDA\s*Organic|Rainforest\s*Alliance|Cradle\s*to\s*Cradle|Energy\s*Star|LEED|Green\s*Seal|certified\s*organic|eco[\-\s]?cert|BlueSign|Ecolabel|EU\s*Flower|Nordic\s*Swan/i.test(
-                  scoreData.explanation
-                )
-                  ? "Certification keywords detected"
-                  : "No certifications found"
-              }
-            </span>
-          </li>
-          <li><b>Sustainable Materials</b> (${materialPoints} point):
-            <span>
-              ${
-                scoreData.explanation &&
-                /sustainable\s*material|recycled\s*(?:content|material|fabric|plastic|paper|glass|metal)|organic\s*(?:cotton|material|fabric|fiber)|bamboo\s*(?:fiber|material)|eco[\-\s]?friendly\s*material|biodegradable\s*material|renewable\s*(?:material|resource)|natural\s*(?:fiber|material)s?(?!\s*gas)|sustainable\s*(?:wood|timber|paper|material|cotton|fabric)|ethically\s*sourced\s*(?:material|ingredient)|plant[\-\s]based/i.test(
-                  scoreData.explanation
-                )
-                  ? materialPoints === 1
-                    ? "Sustainable, recycled, organic, or eco-friendly materials detected"
-                    : "No clear sustainable materials found"
-                  : "No clear sustainable materials found"
-              }
-            </span>
-          </li>
-          <li><b>End-of-Life</b> (${badgeEndOfLifePoints} point):
-            <span>
-              ${
-                scoreData.explanation &&
-                /recyclable|biodegradable|compostable|take[\-\s]back\s*(?:program|initiative)|return\s*(?:program|policy)\s*for\s*(?:recycling|disposal)|product\s*(?:can|may)\s*be\s*recycled|disposal\s*instructions|(?:made|designed)\s*to\s*be\s*(?:recycled|reused)|circular\s*(?:design|economy)|disassembly\s*instructions/i.test(
-                  scoreData.explanation
-                )
-                  ? "End-of-life options (recyclability, biodegradability, return/take-back programs) detected"
-                  : "No end-of-life information found"
-              }
-            </span>
-          </li>
-          <li><b>Environmental Impact Disclosure</b> (${envPoints} point):
-            <span>
-              ${
-                scoreData.explanation &&
-                /carbon\s*(?:footprint|neutral|negative|offset)|(?:reduced|lower|less)\s*(?:water|energy)\s*(?:usage|consumption)|zero\s*(?:waste|emission)|(?:reduced|lower|less)\s*(?:CO2|carbon dioxide|greenhouse gas|GHG)|environmental\s*impact\s*(?:statement|assessment)|life\s*cycle\s*assessment|(?:water|energy)\s*saving|climate\s*(?:friendly|positive|impact)|(?:renewable|green|clean)\s*energy/i.test(
-                  scoreData.explanation
-                )
-                  ? envPoints === 1
-                    ? "Measurable environmental impact mentions detected (carbon footprint, water use, pollution reduction, offsets)"
-                    : "No environmental impact disclosure found"
-                  : "No environmental impact disclosure found"
+                scoreData.sustainableMaterials === 1
+                  ? certPoints === 1
+                    ? "Certification detected"
+                    : "No certifications mentioned"
+                  : "Certifications check not applicable (no sustainable materials detected)"
               }
             </span>
           </li>
@@ -2937,14 +2877,16 @@ async function analyzeWithGroqAI(productText) {
     }
 
     const prompt = `
-You are an expert sustainability analyst for e-commerce products. 
-Analyze this product information and provide a sustainability score based on these criteria:
+You are an expert sustainability analyst for e-commerce products.
+Analyze the following product information and provide a sustainability score (0 or 1 for each criterion) based on these criteria and examples:
 
-1. Origin of Product (1 point): Is manufacturing origin mentioned clearly?
-2. Certifications (1 point): Are there any sustainability certifications mentioned?
-3. Product Materials (1 point): Are the materials sustainable?
-4. End of Life (1 point): Do the materials have good end-of-life properties?
-5. Environmental Impact (1 point): Do the materials have low environmental impact?
+1. Origin of Product (1 point): Is manufacturing origin mentioned clearly? (e.g., "Made in Turkey", "Manufactured in Germany")
+2. Certifications (1 point): Are there any sustainability certifications mentioned? (e.g., "Fairtrade", "EcoLabel", "Organic Certified", "FSC", "Cradle to Cradle", "EU Ecolabel", "Nordic Swan")
+3. Product Materials (1 point): Are the materials sustainable? Consider the following as sustainable: "biodegradable", "vegan", "zero waste", "palm oil free", "natural oils", "olive oil", "laurel oil", "100% vegetable", "recycled", "compostable", "organic cotton", "bamboo", "hemp", "recycled plastic", "recycled paper". If these or similar terms are present, score 1.
+4. End of Life (1 point): Do the materials have good end-of-life properties? Score 1 if the product is described as "biodegradable", "compostable", "recyclable", "zero waste", "100% vegetable", or similar. For example, if the product mentions "biodegradable", "compostable", "zero waste", "100% vegetable", or any phrase indicating it will break down naturally or not create waste, score 1. If none of these or similar terms are present, score 0.
+5. Environmental Impact (1 point): Do the materials have low environmental impact? Score 1 if the product is described as "palm oil free", "no animal testing", "no mineral oils", "no parabens", "vegan", "zero waste", "biodegradable", "natural ingredients", or similar.
+
+If the product does not mention a criterion, score 0 for that criterion. Use the evidence field to explain your reasoning and reference the relevant phrases from the product information.
 
 Respond in JSON format only:
 {
