@@ -990,13 +990,7 @@ async function detectProductPage() {
     ".price-tag",
     ".price-tag-text",
     ".price-tag-num",
-    // Generic price patterns
-    'span:contains("$")',
-    'div:contains("$")',
-    // Currency symbols for different regions
-    'span:contains("€")',
-    'span:contains("£")',
-    'span:contains("¥")',
+    // No :contains() selectors
   ];
 
   // Product title selectors
@@ -1022,16 +1016,13 @@ async function detectProductPage() {
     ".btn-add-to-cart",
     '[data-action="add-to-cart"]',
     '[data-testid="add-to-cart"]',
-    'button:contains("Add to Cart")',
-    'button:contains("Add to Bag")',
-    'button:contains("Buy Now")',
-    'button:contains("Purchase")',
     // Amazon specific
     "#add-to-cart-button",
     "#buy-now-button",
     // Temu specific
     ".add-to-cart-btn",
     ".buy-now-btn",
+    // No :contains() selectors
   ];
 
   // Product image selectors
@@ -1076,10 +1067,7 @@ async function detectProductPage() {
       if (elements.length > 0) {
         // Use the first visible price element
         for (const element of elements) {
-          if (
-            isElementVisible(element) &&
-            element.textContent.trim().match(/[$€£¥]/)
-          ) {
+          if (isElementVisible(element) && /[$€£¥]/.test(element.textContent)) {
             priceElement = element;
             isProductPage = true;
             break;
@@ -1090,6 +1078,17 @@ async function detectProductPage() {
     } catch (e) {
       // Ignore errors from invalid selectors
       console.debug("Error with selector:", selector, e);
+    }
+  }
+  // Fallback: search all spans/divs for price symbols
+  if (!priceElement) {
+    const candidates = document.querySelectorAll("span, div");
+    for (const el of candidates) {
+      if (isElementVisible(el) && /[$€£¥]/.test(el.textContent)) {
+        priceElement = el;
+        isProductPage = true;
+        break;
+      }
     }
   }
 
@@ -1117,6 +1116,19 @@ async function detectProductPage() {
       }
     } catch (e) {
       console.debug("Error with selector:", selector, e);
+    }
+  }
+  // Fallback: search all buttons for text
+  if (!isProductPage) {
+    const buttons = document.querySelectorAll("button");
+    for (const btn of buttons) {
+      if (
+        isElementVisible(btn) &&
+        /add to cart|add to bag|buy now|purchase/i.test(btn.textContent)
+      ) {
+        isProductPage = true;
+        break;
+      }
     }
   }
 
@@ -1468,73 +1480,92 @@ ${sustainabilityClaims}
         manufacturingCountry
       );
 
-      // Analyze with Groq AI
-      // Debug: Log what is sent to Groq for material analysis
+      // Analyze with Groq AI with timeout
       console.log(
         "[DEBUG][Groq] Sending to Groq for material analysis:",
         enhancedDescription
       );
-      const aiScore = await analyzeWithGroqAI(enhancedDescription);
-      // Debug: Log what is received from Groq for material analysis
-      console.log(
-        "[DEBUG][Groq] Received from Groq for material analysis:",
-        aiScore
-      );
-
-      // Compose scoreData using Groq AI results
-      // Use regex-detected country only (remove AI country detection)
-      // Map Groq AI environmental impact score to impact level
-      let envImpactLevel = "unable";
-      if (
-        aiScore.environmentalImpact &&
-        typeof aiScore.environmentalImpact.score === "number"
-      ) {
-        if (aiScore.environmentalImpact.score === 1) {
-          envImpactLevel = "low";
-        } else if (aiScore.environmentalImpact.score === -1) {
-          envImpactLevel = "high";
-        } else if (aiScore.environmentalImpact.score === 0.5) {
-          envImpactLevel = "medium";
-        } else {
-          envImpactLevel = "unable";
-        }
+      let aiScore = null;
+      try {
+        aiScore = await Promise.race([
+          analyzeWithGroqAI(enhancedDescription),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("AI timeout")), 8000)
+          ),
+        ]);
+      } catch (err) {
+        console.warn("[Groq AI] Timed out or failed:", err);
       }
-      const scoreData = {
-        manufacturingCountry: manufacturingCountry, // Only use regex result
-        sustainableMaterials:
+
+      if (aiScore) {
+        console.log(
+          "[DEBUG][Groq] Received from Groq for material analysis:",
+          aiScore
+        );
+        // Compose scoreData using Groq AI results
+        let envImpactLevel = "unable";
+        if (
+          aiScore.environmentalImpact &&
+          typeof aiScore.environmentalImpact.score === "number"
+        ) {
+          if (aiScore.environmentalImpact.score === 1) {
+            envImpactLevel = "low";
+          } else if (aiScore.environmentalImpact.score === -1) {
+            envImpactLevel = "high";
+          } else if (aiScore.environmentalImpact.score === 0.5) {
+            envImpactLevel = "medium";
+          } else {
+            envImpactLevel = "unable";
+          }
+        }
+        const sustainableMaterialsScore =
           aiScore.materials && typeof aiScore.materials.score === "number"
             ? aiScore.materials.score
-            : 0,
-        endOfLife:
+            : 0;
+        let endOfLifeScore =
           aiScore.endOfLife && typeof aiScore.endOfLife.score === "number"
             ? aiScore.endOfLife.score
-            : 0,
-        certifications:
-          aiScore.materials &&
-          typeof aiScore.materials.score === "number" &&
-          aiScore.materials.score === 1
-            ? aiScore.certifications &&
-              typeof aiScore.certifications.score === "number"
-              ? aiScore.certifications.score
-              : 0
-            : 0,
-        environmentalImpact: envImpactLevel,
-        explanation: enhancedDescription,
-        // Add other fields as needed from aiScore
-      };
-
-      // Log full text for debugging
-      console.log(
-        "[DEBUG] Full product description for scoring:",
-        enhancedDescription.substring(0, 500) + "..."
-      );
-      console.log(
-        "[DEBUG] Groq AI sustainable materials score:",
-        scoreData.sustainableMaterials
-      );
-
-      // Display sustainability score and manufacturing origin in badge
-      insertSupplyChainBadge(priceElement, scoreData);
+            : 0;
+        if (sustainableMaterialsScore === 1 && endOfLifeScore !== 1) {
+          endOfLifeScore = 1;
+        }
+        const scoreData = {
+          manufacturingCountry: manufacturingCountry, // Only use regex result
+          sustainableMaterials: sustainableMaterialsScore,
+          endOfLife: endOfLifeScore,
+          certifications:
+            sustainableMaterialsScore === 1
+              ? aiScore.certifications &&
+                typeof aiScore.certifications.score === "number"
+                ? aiScore.certifications.score
+                : 0
+              : 0,
+          environmentalImpact: envImpactLevel,
+          explanation: enhancedDescription,
+          // Add other fields as needed from aiScore
+        };
+        console.log(
+          "[DEBUG] Full product description for scoring:",
+          enhancedDescription.substring(0, 500) + "..."
+        );
+        console.log(
+          "[DEBUG] Groq AI sustainable materials score:",
+          scoreData.sustainableMaterials
+        );
+        insertSupplyChainBadge(priceElement, scoreData);
+      } else {
+        // Fallback badge if AI fails or times out
+        insertSupplyChainBadge(priceElement, {
+          score: null,
+          verifiedScore: null,
+          manufacturingCountry: manufacturingCountry,
+          co2Emissions: null,
+          shippingMethod: null,
+          icons: "",
+          explanation:
+            "Sustainability data not available (AI timeout or error).",
+        });
+      }
     } catch (error) {
       console.error("Error processing product page:", error);
       // Fallback to body if there's an error
@@ -1980,8 +2011,8 @@ function insertSupplyChainBadge(priceElement, scoreData) {
         score: calculatedScore,
       };
 
-      // Store in localStorage for trend analysis
-      localStorage.setItem(storageKey, JSON.stringify(confidenceData));
+      // Use safeStorage instead of localStorage to avoid sandbox errors
+      safeStorage.setItem(storageKey, JSON.stringify(confidenceData));
 
       console.log(
         "[DEBUG] Stored confidence data for future analysis:",
