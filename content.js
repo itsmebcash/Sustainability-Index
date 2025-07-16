@@ -151,116 +151,152 @@ async function calculateSustainabilityScore(productText) {
   // Country of origin is now detected by the AI model
   // No manual regex detection needed anymore
 
-  // Check for sustainability certifications with context verification
-  // Structured certification data with proper weighting and confidence
-  const certificationData = [
-    {
-      name: "GOTS",
-      pattern: /\b(?:GOTS|Global\s*Organic\s*Textile\s*Standard)\b/i,
-      weight: 1.0,
-      confidence: 0.95,
-      category: "textile",
-    },
-    {
-      name: "OEKO-TEX",
-      pattern: /\b(?:OEKO[\-\s]?TEX|Standard\s*100)\b/i,
-      weight: 1.0,
-      confidence: 0.9,
-      category: "textile",
-    },
-    {
-      name: "FSC",
-      pattern: /\b(?:FSC|Forest\s*Stewardship\s*Council)\b/i,
-      weight: 1.0,
-      confidence: 0.9,
-      category: "wood",
-    },
-    {
-      name: "B Corp",
-      pattern: /\b(?:B\s*Corp|B\s*Corporation|Certified\s*B\s*Corporation)\b/i,
-      weight: 1.0,
-      confidence: 0.85,
-      category: "company",
-    },
-    {
-      name: "Fair Trade",
-      pattern: /\b(?:Fairtrade|Fair\s*Trade)\b/i,
-      weight: 1.0,
-      confidence: 0.85,
-      category: "social",
-    },
-    {
-      name: "USDA Organic",
-      pattern:
-        /\b(?:USDA\s*Organic|Certified\s*Organic|Organic\s*Certification)\b/i,
-      weight: 1.0,
-      confidence: 0.9,
-      category: "agriculture",
-    },
-    {
-      name: "Rainforest Alliance",
-      pattern: /\b(?:Rainforest\s*Alliance)\b/i,
-      weight: 1.0,
-      confidence: 0.9,
-      category: "agriculture",
-    },
-    {
-      name: "Cradle to Cradle",
-      pattern: /\b(?:Cradle\s*to\s*Cradle|C2C\s*Certified)\b/i,
-      weight: 1.0,
-      confidence: 0.9,
-      category: "product",
-    },
-    {
-      name: "Energy Star",
-      pattern: /\b(?:Energy\s*Star)\b/i,
-      weight: 1.0,
-      confidence: 0.9,
-      category: "electronics",
-    },
-    {
-      name: "LEED",
-      pattern:
-        /\b(?:LEED|Leadership\s*in\s*Energy\s*and\s*Environmental\s*Design)\b/i,
-      weight: 1.0,
-      confidence: 0.85,
-      category: "building",
-    },
-    {
-      name: "Green Seal",
-      pattern: /\b(?:Green\s*Seal)\b/i,
-      weight: 1.0,
-      confidence: 0.8,
-      category: "product",
-    },
-    {
-      name: "BlueSign",
-      pattern: /\b(?:BlueSign|Blue\s*Sign)\b/i,
-      weight: 1.0,
-      confidence: 0.85,
-      category: "textile",
-    },
-    {
-      name: "EU Ecolabel",
-      pattern: /\b(?:Ecolabel|EU\s*Flower|EU\s*Ecolabel)\b/i,
-      weight: 1.0,
-      confidence: 0.85,
-      category: "product",
-    },
-    {
-      name: "Nordic Swan",
-      pattern: /\b(?:Nordic\s*Swan)\b/i,
-      weight: 1.0,
-      confidence: 0.85,
-      category: "product",
-    },
-  ];
+  // Fetch certification patterns from Supabase (with fallback)
+  let certificationData = [];
+  try {
+    // Dynamic import to avoid circular dependency
+    const { fetchCertificationPatterns } = await import(
+      "./lib/fetchCertificationPatterns.js"
+    );
+    const patterns = await fetchCertificationPatterns();
+    if (patterns && Array.isArray(patterns) && patterns.length > 0) {
+      certificationData = patterns;
+    } else {
+      throw new Error("No patterns fetched");
+    }
+  } catch (err) {
+    // Fallback to hardcoded patterns if fetch fails
+    certificationData = [
+      {
+        name: "GOTS",
+        pattern: /\b(?:GOTS|Global\s*Organic\s*Textile\s*Standard)\b/i,
+        weight: 1.0,
+        confidence: 0.95,
+        category: "textile",
+      },
+      {
+        name: "OEKO-TEX",
+        pattern: /\b(?:OEKO[\-\s]?TEX|Standard\s*100)\b/i,
+        weight: 1.0,
+        confidence: 0.9,
+        category: "textile",
+      },
+      {
+        name: "FSC",
+        pattern: /\b(?:FSC|Forest\s*Stewardship\s*Council)\b/i,
+        weight: 1.0,
+        confidence: 0.9,
+        category: "wood",
+      },
+      {
+        name: "B Corp",
+        pattern:
+          /\b(?:B\s*Corp|B\s*Corporation|Certified\s*B\s*Corporation)\b/i,
+        weight: 1.0,
+        confidence: 0.85,
+        category: "company",
+      },
+      {
+        name: "Fair Trade",
+        pattern: /\b(?:Fairtrade|Fair\s*Trade)\b/i,
+        weight: 1.0,
+        confidence: 0.85,
+        category: "social",
+      },
+      {
+        name: "USDA Organic",
+        pattern:
+          /\b(?:USDA\s*Organic|Certified\s*Organic|Organic\s*Certification)\b/i,
+        weight: 1.0,
+        confidence: 0.9,
+        category: "agriculture",
+      },
+      {
+        name: "Rainforest Alliance",
+        pattern: /\b(?:Rainforest\s*Alliance)\b/i,
+        weight: 1.0,
+        confidence: 0.9,
+        category: "agriculture",
+      },
+      {
+        name: "Cradle to Cradle",
+        pattern: /\b(?:Cradle\s*to\s*Cradle|C2C\s*Certified)\b/i,
+        weight: 1.0,
+        confidence: 0.9,
+        category: "product",
+      },
+      {
+        name: "Energy Star",
+        pattern: /\b(?:Energy\s*Star)\b/i,
+        weight: 1.0,
+        confidence: 0.9,
+        category: "electronics",
+      },
+      {
+        name: "LEED",
+        pattern:
+          /\b(?:LEED|Leadership\s*in\s*Energy\s*and\s*Environmental\s*Design)\b/i,
+        weight: 1.0,
+        confidence: 0.85,
+        category: "building",
+      },
+      {
+        name: "Green Seal",
+        pattern: /\b(?:Green\s*Seal)\b/i,
+        weight: 1.0,
+        confidence: 0.8,
+        category: "product",
+      },
+      {
+        name: "BlueSign",
+        pattern: /\b(?:BlueSign|Blue\s*Sign)\b/i,
+        weight: 1.0,
+        confidence: 0.85,
+        category: "textile",
+      },
+      {
+        name: "EU Ecolabel",
+        pattern: /\b(?:Ecolabel|EU\s*Flower|EU\s*Ecolabel)\b/i,
+        weight: 1.0,
+        confidence: 0.85,
+        category: "product",
+      },
+      {
+        name: "Nordic Swan",
+        pattern: /\b(?:Nordic\s*Swan)\b/i,
+        weight: 1.0,
+        confidence: 0.85,
+        category: "product",
+      },
+    ];
+    console.warn("[SUSTAINABILITY] Using fallback certification patterns.");
+  }
 
-  // Look for certifications with context
+  // Hybrid AI + pattern match for certifications
   let foundCertifications = [];
   let certHighestConfidence = 0;
   let bestEvidence = "";
+  let aiCerts = [];
+  let aiEvidence = "";
+  let aiConfidence = 0;
 
+  // Try AI first (if available)
+  try {
+    const aiScore = await analyzeWithGroqAI(productText);
+    if (
+      aiScore &&
+      aiScore.certifications &&
+      aiScore.certifications.score === 1
+    ) {
+      aiCerts = aiScore.certifications.allFound || [];
+      aiEvidence = aiScore.certifications.evidence || "";
+      aiConfidence = aiScore.certifications.confidence || 0.9;
+    }
+  } catch (e) {
+    // Ignore AI errors, fallback to pattern match
+  }
+
+  // Pattern match (Supabase or fallback)
   try {
     // First check if text contains "certification" or "certified" for context
     const hasCertificationContext =
@@ -272,32 +308,27 @@ async function calculateSustainabilityScore(productText) {
     for (const cert of certificationData) {
       const matches = productText.match(
         new RegExp(
-          `((?:[\\s\\w,.]{0,30})${cert.pattern.source}(?:[\\s\\w,.]{0,30}))`,
+          `((?:[\s\w,.]{0,30})${cert.pattern.source}(?:[\s\w,.]{0,30}))`,
           "gi"
         )
       );
 
       if (matches && matches.length) {
-        // For each match, check if it's in a relevant context
         for (const match of matches) {
-          // Check if the match is in a negative context (e.g. "not certified by")
           const isNegativeContext =
             /not\s+(?:\w+\s+){0,3}(?:certified|compliant)|doesn't\s+(?:\w+\s+){0,3}(?:meet|have)/i.test(
               match
             );
-
           if (!isNegativeContext) {
             const adjustedConfidence = Math.min(
               cert.confidence + contextBoost,
               1.0
             );
-
             foundCertifications.push({
               name: cert.name,
               evidence: match,
               confidence: adjustedConfidence,
             });
-
             if (adjustedConfidence > certHighestConfidence) {
               certHighestConfidence = adjustedConfidence;
               bestEvidence = match;
@@ -306,25 +337,33 @@ async function calculateSustainabilityScore(productText) {
         }
       }
     }
-
-    // If we found any certifications
-    if (foundCertifications.length > 0) {
-      sustainabilityScore.certifications.score = 1; // Binary scoring: has certification or not
-      sustainabilityScore.certifications.evidence = bestEvidence;
-      sustainabilityScore.certifications.confidence = certHighestConfidence;
-      sustainabilityScore.certifications.allFound = foundCertifications.map(
-        (c) => c.name
-      );
-
-      console.log(
-        "[SUSTAINABILITY] Certifications found:",
-        foundCertifications.map((c) => c.name).join(", "),
-        "with highest confidence:",
-        certHighestConfidence
-      );
-    }
   } catch (error) {
-    console.error("[SUSTAINABILITY] Error detecting certifications:", error);
+    console.error(
+      "[SUSTAINABILITY] Error detecting certifications (pattern match):",
+      error
+    );
+  }
+
+  // Merge AI and pattern match results (union, deduped by name)
+  let allCerts = [...foundCertifications];
+  for (const aiCert of aiCerts) {
+    if (!allCerts.some((c) => c.name === aiCert)) {
+      allCerts.push({
+        name: aiCert,
+        evidence: aiEvidence,
+        confidence: aiConfidence,
+      });
+    }
+  }
+  if (allCerts.length > 0) {
+    sustainabilityScore.certifications.score = 1;
+    sustainabilityScore.certifications.evidence = allCerts[0].evidence;
+    sustainabilityScore.certifications.confidence = allCerts[0].confidence;
+    sustainabilityScore.certifications.allFound = allCerts.map((c) => c.name);
+    console.log(
+      "[SUSTAINABILITY] Certifications found (hybrid):",
+      allCerts.map((c) => c.name).join(", ")
+    );
   }
 
   // Check for sustainable materials with improved context validation
@@ -1060,10 +1099,13 @@ async function detectProductPage() {
     isProductPage = true;
   }
 
-  // Then check for price elements
+  // Then check for price elements (limit to first 10 matches per selector)
   for (const selector of priceSelectors) {
     try {
-      const elements = document.querySelectorAll(selector);
+      const elements = Array.from(document.querySelectorAll(selector)).slice(
+        0,
+        10
+      );
       if (elements.length > 0) {
         // Use the first visible price element
         for (const element of elements) {
@@ -1080,9 +1122,12 @@ async function detectProductPage() {
       console.debug("Error with selector:", selector, e);
     }
   }
-  // Fallback: search all spans/divs for price symbols
+  // Fallback: search all spans/divs for price symbols, but limit to first 2000 elements
   if (!priceElement) {
-    const candidates = document.querySelectorAll("span, div");
+    const candidates = Array.from(document.querySelectorAll("span, div")).slice(
+      0,
+      2000
+    );
     for (const el of candidates) {
       if (isElementVisible(el) && /[$€£¥]/.test(el.textContent)) {
         priceElement = el;
@@ -1171,288 +1216,222 @@ async function detectProductPage() {
 
   // If we've determined this is a product page, proceed
   if (isProductPage) {
-    try {
-      // If we don't have a price element yet, try to find any element with a price pattern
-      if (!priceElement) {
-        const priceRegex = /\$\d+(\.\d{2})?/;
-        const allElements = document.querySelectorAll("*");
-        for (const element of allElements) {
-          if (
-            element.textContent &&
-            priceRegex.test(element.textContent) &&
-            isElementVisible(element)
-          ) {
-            priceElement = element;
+    // Show the loading badge immediately before any heavy DOM work
+    let badgePriceElement = priceElement || titleElement || document.body;
+    const initialBadgeId = "temp-badge-" + Date.now();
+    insertSupplyChainBadge(badgePriceElement, {
+      score: null,
+      verifiedScore: null,
+      manufacturingCountry: "Unknown",
+      co2Emissions: null,
+      shippingMethod: null,
+      icons: "",
+      isLoading: true,
+      badgeId: initialBadgeId,
+      explanation: "Analyzing product sustainability...",
+    });
+
+    // Defer all heavy DOM work and AI calls
+    setTimeout(async () => {
+      try {
+        // If we don't have a price element yet, try to find any element with a price pattern
+        if (!priceElement) {
+          const priceRegex = /\$\d+(\.\d{2})?/;
+          const allElements = document.querySelectorAll("*");
+          for (const element of allElements) {
+            if (
+              element.textContent &&
+              priceRegex.test(element.textContent) &&
+              isElementVisible(element)
+            ) {
+              priceElement = element;
+              break;
+            }
+          }
+        }
+
+        // If we still don't have a price element, use the title element or body as fallback
+        if (!priceElement) {
+          priceElement = titleElement || document.body;
+        }
+
+        // Extract product title
+        const productTitle =
+          (titleElement ? titleElement.textContent.trim() : "") ||
+          document.title ||
+          "Product";
+
+        // Try to extract brand name from common selectors or meta tags
+        let productBrand = "";
+        const brandSelectors = [
+          ".brand",
+          ".product-brand",
+          '[itemprop="brand"]',
+          "[data-brand]",
+          ".a-brand",
+          "#bylineInfo",
+          ".brand-name",
+          ".productMeta-brand",
+          ".product-meta__vendor",
+          ".product-vendor",
+          ".manufacturer",
+          '[data-testid="brand-name"]',
+          '[data-test="brand-name"]',
+        ];
+        for (const selector of brandSelectors) {
+          const el = document.querySelector(selector);
+          if (el && el.textContent.trim().length > 0) {
+            productBrand = el.textContent.trim();
             break;
           }
         }
-      }
-
-      // If we still don't have a price element, use the title element or body as fallback
-      if (!priceElement) {
-        priceElement = titleElement || document.body;
-      }
-
-      // Extract product title
-      const productTitle =
-        (titleElement ? titleElement.textContent.trim() : "") ||
-        document.title ||
-        "Product";
-
-      // Try to extract brand name from common selectors or meta tags
-      let productBrand = "";
-      const brandSelectors = [
-        ".brand",
-        ".product-brand",
-        '[itemprop="brand"]',
-        "[data-brand]",
-        ".a-brand",
-        "#bylineInfo",
-        ".brand-name",
-        ".productMeta-brand",
-        ".product-meta__vendor",
-        ".product-vendor",
-        ".manufacturer",
-        '[data-testid="brand-name"]',
-        '[data-test="brand-name"]',
-      ];
-      for (const selector of brandSelectors) {
-        const el = document.querySelector(selector);
-        if (el && el.textContent.trim().length > 0) {
-          productBrand = el.textContent.trim();
-          break;
+        // Fallback: try meta tag
+        if (!productBrand) {
+          const metaBrand = document.querySelector(
+            'meta[name="brand"], meta[property="og:brand"]'
+          );
+          if (metaBrand && metaBrand.content) {
+            productBrand = metaBrand.content.trim();
+          }
         }
-      }
-      // Fallback: try meta tag
-      if (!productBrand) {
-        const metaBrand = document.querySelector(
-          'meta[name="brand"], meta[property="og:brand"]'
-        );
-        if (metaBrand && metaBrand.content) {
-          productBrand = metaBrand.content.trim();
-        }
-      }
 
-      // Extract comprehensive product description and details - more thorough product info gathering
-      let productDescription = "";
+        // Extract comprehensive product description and details - more thorough product info gathering
+        let productDescription = "";
 
-      // Try meta description first
-      const metaDesc =
-        document.querySelector('meta[name="description"]')?.content || "";
-      if (metaDesc) productDescription += metaDesc + "\n\n";
+        // Try meta description first
+        const metaDesc =
+          document.querySelector('meta[name="description"]')?.content || "";
+        if (metaDesc) productDescription += metaDesc + "\n\n";
 
-      // Common product description selectors - combine them all for better data
-      const descriptionSelectors = [
-        // Existing selectors
-        ".product-description",
-        "#productDescription",
-        "#feature-bullets",
-        ".a-expander-content",
-        ".product-overview",
-        ".product-info",
-        "[data-testid='product-description']",
-        ".product__description",
-        ".details-panel",
-        ".product-details-wrapper",
-        ".prod-detail",
-        ".prod-info",
-        ".product-features",
-        "#description",
-        ".description",
-        "#item-description",
-        ".item-description",
-        ".summary",
-        ".specs",
-        ".specifications",
-        // Amazon-specific expanded selectors
-        "#productDetails_detailBullets_sections1", // Product Details section (Amazon)
-        "#detailBullets_feature_div", // Product Details section (Amazon)
-        "#prodDetails", // Product Details section (Amazon)
-        "#additionalDetails_feature_div", // Additional Details section (Amazon)
-        "#aboutThisItem_feature_div", // About This Item section (Amazon)
-        ".about-this-item", // About This Item (Amazon)
-        "#productDescription_feature_div", // Product Description section (Amazon)
-        ".product-description-wrapper", // Product Description (Amazon)
-        ".additional-details", // Additional Details (Amazon)
-        ".product-details", // Product Details (Amazon)
-      ];
+        // Common product description selectors - combine them all for better data
+        const descriptionSelectors = [
+          // Existing selectors
+          "ux-layout-section-evo ux-layout-section--features",
+          "vim d-item-description",
+          ".product-description",
+          "#productDescription",
+          "#feature-bullets",
+          ".a-expander-content",
+          ".product-overview",
+          ".product-info",
+          "[data-testid='product-description']",
+          ".product__description",
+          ".details-panel",
+          ".product-details-wrapper",
+          ".prod-detail",
+          ".prod-info",
+          ".product-features",
+          "#description",
+          ".description",
+          "#item-description",
+          ".item-description",
+          ".summary",
+          ".specs",
+          ".specifications",
+          // Amazon-specific expanded selectors
+          "#productDetails_detailBullets_sections1", // Product Details section (Amazon)
+          "#detailBullets_feature_div", // Product Details section (Amazon)
+          "#prodDetails", // Product Details section (Amazon)
+          "#additionalDetails_feature_div", // Additional Details section (Amazon)
+          "#aboutThisItem_feature_div", // About This Item section (Amazon)
+          ".about-this-item", // About This Item (Amazon)
+          "#productDescription_feature_div", // Product Description section (Amazon)
+          ".product-description-wrapper", // Product Description (Amazon)
+          ".additional-details", // Additional Details (Amazon)
+          ".product-details", // Product Details (Amazon)
+        ];
 
-      // Extract from all selectors and combine
-      descriptionSelectors.forEach((selector) => {
-        const elements = document.querySelectorAll(selector);
-        if (elements && elements.length > 0) {
-          elements.forEach((element) => {
-            const text = element.textContent.trim();
-            if (text && text.length > 10) {
-              // Log if we find "Country of Origin" in the text for debugging
-              if (/country of origin|origin[:]/i.test(text)) {
-                console.log(
-                  "[DEBUG] Found potential country of origin text:",
-                  text
-                );
-                // Try to extract the country name from the text block and set it for UI/scoring
-                const countryMatch = text.match(
-                  /country\s*of\s*origin[^A-Za-z]*[:\-–=]?\s*([A-Za-z\s\-']{2,30})/i
-                );
-                if (countryMatch && countryMatch[1]) {
-                  const countryCandidate = countryMatch[1].trim();
-                  // Validate against known countries (case-insensitive)
-                  const candidateLower = countryCandidate.toLowerCase();
-                  const validCountry = Object.keys(countryEmissionFactors).find(
-                    (c) =>
-                      candidateLower === c ||
-                      candidateLower === c.replace(/\s+/g, "")
+        // Extract from all selectors and combine, but limit to first 5 elements per selector
+        descriptionSelectors.forEach((selector) => {
+          const elements = Array.from(
+            document.querySelectorAll(selector)
+          ).slice(0, 5);
+          if (elements && elements.length > 0) {
+            elements.forEach((element) => {
+              const text = element.textContent.trim();
+              if (text && text.length > 10) {
+                // Log if we find "Country of Origin" in the text for debugging
+                if (/country of origin|origin[:]/i.test(text)) {
+                  console.log(
+                    "[DEBUG] Found potential country of origin text:",
+                    text
                   );
-                  if (validCountry) {
-                    window.detectedCountry =
-                      validCountry.charAt(0).toUpperCase() +
-                      validCountry.slice(1);
-                    console.log(
-                      "[DEBUG] Country detected and set:",
-                      window.detectedCountry
+                  // Try to extract the country name from the text block and set it for UI/scoring
+                  const countryMatch = text.match(
+                    /country\s*of\s*origin[^A-Za-z]*[:\-–=]?\s*([A-Za-z\s\-']{2,30})/i
+                  );
+                  if (countryMatch && countryMatch[1]) {
+                    const countryCandidate = countryMatch[1].trim();
+                    // Validate against known countries (case-insensitive)
+                    const candidateLower = countryCandidate.toLowerCase();
+                    const validCountry = Object.keys(
+                      countryEmissionFactors
+                    ).find(
+                      (c) =>
+                        candidateLower === c ||
+                        candidateLower === c.replace(/\s+/g, "")
                     );
-                  } else {
-                    // Fallback: use the candidate if it looks plausible
-                    if (
-                      countryCandidate.length >= 2 &&
-                      countryCandidate.length <= 30 &&
-                      /^[A-Za-z\s\-']+$/.test(countryCandidate)
-                    ) {
-                      window.detectedCountry = countryCandidate;
+                    if (validCountry) {
+                      window.detectedCountry =
+                        validCountry.charAt(0).toUpperCase() +
+                        validCountry.slice(1);
                       console.log(
-                        "[DEBUG] Country detected (fallback):",
+                        "[DEBUG] Country detected and set:",
                         window.detectedCountry
                       );
-                    }
-                  }
-                }
-              }
-              productDescription += text + "\n\n";
-            }
-          });
-        }
-      });
-
-      // If still empty, try to find any paragraph that might contain product info
-      if (!productDescription) {
-        const paragraphs = document.querySelectorAll("p");
-        if (paragraphs && paragraphs.length > 0) {
-          paragraphs.forEach((p) => {
-            const text = p.textContent.trim();
-            if (text && text.length > 40 && text.length < 1000) {
-              productDescription += text + "\n\n";
-            }
-          });
-        }
-      }
-
-      productDescription =
-        productDescription.trim() || "No product description found.";
-
-      // Extract product details (materials, specifications, etc.)
-      const productDetails = extractProductDetails();
-
-      // We've removed DOM-based country detection as we'll rely solely on AI analysis
-      console.log(
-        "[DEBUG] Skipping DOM search for country of origin - will use AI detection instead"
-      );
-      /* const originSelectors = [
-        ".product-details",
-        ".product-specs",
-        ".product-specifications",
-        ".product-information",
-        ".additional-information",
-        ".product-attributes",
-        '[data-testid="product-details"]',
-        "#product-details",
-        "#product-specs",
-        "table", // Often country info is in a table
-        "dl", // Definition lists often contain product specs
-      ];
-
-      let domOriginFound = false;
-      for (const selector of originSelectors) {
-        const elements = document.querySelectorAll(selector);
-        for (const element of elements) {
-          // Normalize text for easier matching
-          const text = element.textContent.replace(/\s+/g, " ").trim();
-          if (/country of origin\s*:/i.test(text)) {
-            console.log(
-              "[DEBUG] Found DOM element with country of origin:",
-              text
-            );
-            // Try direct match
-            let countryMatch = text.match(
-              /[Cc]ountry\s*of\s*[Oo]rigin\s*:\s*([A-Za-z\s\-']{2,30})/
-            );
-            if (countryMatch && countryMatch[1]) {
-              window.domDetectedCountry = countryMatch[1].trim();
-              console.log(
-                "[DEBUG] FOUND COUNTRY IN DOM:",
-                window.domDetectedCountry
-              );
-              domOriginFound = true;
-              break;
-            }
-            // If not found, check child nodes (e.g., table cells, definition lists)
-            if (
-              !domOriginFound &&
-              element.children &&
-              element.children.length > 0
-            ) {
-              for (const child of element.children) {
-                const childText = child.textContent.replace(/\s+/g, " ").trim();
-                if (/country of origin\s*:/i.test(childText)) {
-                  let childMatch = childText.match(
-                    /[Cc]ountry\s*of\s*[Oo]rigin\s*:\s*([A-Za-z\s\-']{2,30})/
-                  );
-                  if (childMatch && childMatch[1]) {
-                    window.domDetectedCountry = childMatch[1].trim();
-                    console.log(
-                      "[DEBUG] FOUND COUNTRY IN DOM CHILD:",
-                      window.domDetectedCountry
-                    );
-                    domOriginFound = true;
-                    break;
-                  }
-                }
-                // Also check for table rows/cells
-                if (!domOriginFound && child.tagName === "TR") {
-                  const cells = child.querySelectorAll("td, th");
-                  for (const cell of cells) {
-                    const cellText = cell.textContent
-                      .replace(/\s+/g, " ")
-                      .trim();
-                    if (/country of origin\s*:/i.test(cellText)) {
-                      let cellMatch = cellText.match(
-                        /[Cc]ountry\s*of\s*[Oo]rigin\s*:\s*([A-Za-z\s\-']{2,30})/
-                      );
-                      if (cellMatch && cellMatch[1]) {
-                        window.domDetectedCountry = cellMatch[1].trim();
+                    } else {
+                      // Fallback: use the candidate if it looks plausible
+                      if (
+                        countryCandidate.length >= 2 &&
+                        countryCandidate.length <= 30 &&
+                        /^[A-Za-z\s\-']+$/.test(countryCandidate)
+                      ) {
+                        window.detectedCountry = countryCandidate;
                         console.log(
-                          "[DEBUG] FOUND COUNTRY IN DOM TABLE CELL:",
-                          window.domDetectedCountry
+                          "[DEBUG] Country detected (fallback):",
+                          window.detectedCountry
                         );
-                        domOriginFound = true;
-                        break;
                       }
                     }
                   }
-                  if (domOriginFound) break;
                 }
+                productDescription += text + "\n\n";
               }
+            });
+          }
+        });
+
+        // If still empty, try to find any paragraph that might contain product info
+        if (!productDescription) {
+          const paragraphs = Array.from(document.querySelectorAll("p")).slice(
+            0,
+            20
+          );
+          for (const p of paragraphs) {
+            const text = p.textContent.trim();
+            if (text && text.length > 40 && text.length < 1000) {
+              productDescription += text + "\n\n";
+              if (productDescription.length > 2000) break;
             }
           }
-          if (domOriginFound) break;
         }
-        if (domOriginFound) break;
-      } */
 
-      // Extract sustainability claims or eco labels if available
-      const sustainabilityClaims = extractSustainabilityClaims();
+        productDescription =
+          productDescription.trim() || "No product description found.";
 
-      // Construct comprehensive product info
-      const enhancedDescription = `
+        // Extract product details (materials, specifications, etc.)
+        const productDetails = extractProductDetails();
+
+        // We've removed DOM-based country detection as we'll rely solely on AI analysis
+        console.log(
+          "[DEBUG] Skipping DOM search for country of origin - will use AI detection instead"
+        );
+
+        // Extract sustainability claims or eco labels if available
+        const sustainabilityClaims = extractSustainabilityClaims();
+
+        // Construct comprehensive product info
+        const enhancedDescription = `
 PRODUCT DESCRIPTION:
 ${productDescription}
 
@@ -1461,129 +1440,138 @@ ${productDetails}
 
 SUSTAINABILITY CLAIMS:
 ${sustainabilityClaims}
-      `.trim();
+        `.trim();
 
-      // Log product description for debugging purposes
-      console.log(
-        "[DEBUG] Enhanced description snippet:",
-        enhancedDescription.substring(0, 300) + "..."
-      );
-
-      // Log the full enhanced description for debugging
-      console.log("[DEBUG] FULL Enhanced description:", enhancedDescription);
-
-      // Use the regex-detected country for scoring and UI
-      // If not found, set to Unknown
-      let manufacturingCountry = window.detectedCountry || "Unknown";
-      console.log(
-        "[DEBUG] Manufacturing country used for scoring/UI:",
-        manufacturingCountry
-      );
-
-      // Analyze with Groq AI with timeout
-      console.log(
-        "[DEBUG][Groq] Sending to Groq for material analysis:",
-        enhancedDescription
-      );
-      let aiScore = null;
-      try {
-        aiScore = await Promise.race([
-          analyzeWithGroqAI(enhancedDescription),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("AI timeout")), 8000)
-          ),
-        ]);
-      } catch (err) {
-        console.warn("[Groq AI] Timed out or failed:", err);
-      }
-
-      if (aiScore) {
+        // Log product description for debugging purposes
         console.log(
-          "[DEBUG][Groq] Received from Groq for material analysis:",
-          aiScore
+          "[DEBUG] Enhanced description snippet:",
+          enhancedDescription.substring(0, 300) + "..."
         );
-        // Compose scoreData using Groq AI results
-        let envImpactLevel = "unable";
-        if (
-          aiScore.environmentalImpact &&
-          typeof aiScore.environmentalImpact.score === "number"
-        ) {
-          if (aiScore.environmentalImpact.score === 1) {
-            envImpactLevel = "low";
-          } else if (aiScore.environmentalImpact.score === -1) {
-            envImpactLevel = "high";
-          } else if (aiScore.environmentalImpact.score === 0.5) {
-            envImpactLevel = "medium";
-          } else {
-            envImpactLevel = "unable";
+
+        // Log the full enhanced description for debugging
+        console.log("[DEBUG] FULL Enhanced description:", enhancedDescription);
+
+        // Use the regex-detected country for scoring and UI
+        // If not found, set to Unknown
+        let manufacturingCountry = window.detectedCountry || "Unknown";
+        console.log(
+          "[DEBUG] Manufacturing country used for scoring/UI:",
+          manufacturingCountry
+        );
+
+        // Now perform the Groq AI analysis asynchronously
+        console.log(
+          "[DEBUG][Groq] Sending to Groq for material analysis:",
+          enhancedDescription
+        );
+
+        // Run analysis in the background
+        setTimeout(async function runBackgroundAnalysis() {
+          let aiScore = null;
+          try {
+            aiScore = await Promise.race([
+              analyzeWithGroqAI(enhancedDescription),
+              new Promise((_, reject) =>
+                setTimeout(() => reject(new Error("AI timeout")), 8000)
+              ),
+            ]);
+          } catch (err) {
+            console.warn("[Groq AI] Timed out or failed:", err);
           }
+
+          // Find the existing badge
+          const existingBadge = document.getElementById(initialBadgeId);
+
+          if (aiScore) {
+            console.log(
+              "[DEBUG][Groq] Received from Groq for material analysis:",
+              aiScore
+            );
+            // Compose scoreData using Groq AI results
+            let envImpactLevel = "unable";
+            if (
+              aiScore.environmentalImpact &&
+              typeof aiScore.environmentalImpact.score === "number"
+            ) {
+              if (aiScore.environmentalImpact.score === 1) {
+                envImpactLevel = "low";
+              } else if (aiScore.environmentalImpact.score === -1) {
+                envImpactLevel = "high";
+              } else if (aiScore.environmentalImpact.score === 0.5) {
+                envImpactLevel = "medium";
+              } else {
+                envImpactLevel = "unable";
+              }
+            }
+            const sustainableMaterialsScore =
+              aiScore.materials && typeof aiScore.materials.score === "number"
+                ? aiScore.materials.score
+                : 0;
+            let endOfLifeScore =
+              aiScore.endOfLife && typeof aiScore.endOfLife.score === "number"
+                ? aiScore.endOfLife.score
+                : 0;
+            if (sustainableMaterialsScore === 1 && endOfLifeScore !== 1) {
+              endOfLifeScore = 1;
+            }
+            const scoreData = {
+              manufacturingCountry: manufacturingCountry, // Only use regex result
+              sustainableMaterials: sustainableMaterialsScore,
+              endOfLife: endOfLifeScore,
+              certifications:
+                sustainableMaterialsScore === 1
+                  ? aiScore.certifications &&
+                    typeof aiScore.certifications.score === "number"
+                    ? aiScore.certifications.score
+                    : 0
+                  : 0,
+              environmentalImpact: envImpactLevel,
+              explanation: enhancedDescription,
+              updateExisting: existingBadge,
+              // Add other fields as needed from aiScore
+            };
+            console.log(
+              "[DEBUG] Full product description for scoring:",
+              enhancedDescription.substring(0, 500) + "..."
+            );
+            console.log(
+              "[DEBUG] Groq AI sustainable materials score:",
+              scoreData.sustainableMaterials
+            );
+            insertSupplyChainBadge(priceElement, scoreData);
+          } else {
+            // Fallback badge if AI fails or times out
+            insertSupplyChainBadge(priceElement, {
+              score: null,
+              verifiedScore: null,
+              manufacturingCountry: manufacturingCountry,
+              co2Emissions: null,
+              shippingMethod: null,
+              icons: "",
+              updateExisting: existingBadge,
+              explanation:
+                "Sustainability data not available (AI timeout or error).",
+            });
+          }
+        }, 100); // Small delay to ensure the loading badge is shown first
+      } catch (error) {
+        console.error("Error processing product page:", error);
+        // Fallback to body if there's an error
+        try {
+          insertSupplyChainBadge(document.body, {
+            score: null,
+            verifiedScore: null,
+            manufacturingCountry: null,
+            co2Emissions: null,
+            shippingMethod: null,
+            icons: "",
+            explanation: "No sustainability data available.",
+          });
+        } catch (fallbackError) {
+          console.error("Fallback error:", fallbackError);
         }
-        const sustainableMaterialsScore =
-          aiScore.materials && typeof aiScore.materials.score === "number"
-            ? aiScore.materials.score
-            : 0;
-        let endOfLifeScore =
-          aiScore.endOfLife && typeof aiScore.endOfLife.score === "number"
-            ? aiScore.endOfLife.score
-            : 0;
-        if (sustainableMaterialsScore === 1 && endOfLifeScore !== 1) {
-          endOfLifeScore = 1;
-        }
-        const scoreData = {
-          manufacturingCountry: manufacturingCountry, // Only use regex result
-          sustainableMaterials: sustainableMaterialsScore,
-          endOfLife: endOfLifeScore,
-          certifications:
-            sustainableMaterialsScore === 1
-              ? aiScore.certifications &&
-                typeof aiScore.certifications.score === "number"
-                ? aiScore.certifications.score
-                : 0
-              : 0,
-          environmentalImpact: envImpactLevel,
-          explanation: enhancedDescription,
-          // Add other fields as needed from aiScore
-        };
-        console.log(
-          "[DEBUG] Full product description for scoring:",
-          enhancedDescription.substring(0, 500) + "..."
-        );
-        console.log(
-          "[DEBUG] Groq AI sustainable materials score:",
-          scoreData.sustainableMaterials
-        );
-        insertSupplyChainBadge(priceElement, scoreData);
-      } else {
-        // Fallback badge if AI fails or times out
-        insertSupplyChainBadge(priceElement, {
-          score: null,
-          verifiedScore: null,
-          manufacturingCountry: manufacturingCountry,
-          co2Emissions: null,
-          shippingMethod: null,
-          icons: "",
-          explanation:
-            "Sustainability data not available (AI timeout or error).",
-        });
       }
-    } catch (error) {
-      console.error("Error processing product page:", error);
-      // Fallback to body if there's an error
-      // Fallback to body if there's an error
-      try {
-        insertSupplyChainBadge(document.body, {
-          score: null,
-          verifiedScore: null,
-          manufacturingCountry: null,
-          co2Emissions: null,
-          shippingMethod: null,
-          icons: "",
-          explanation: "No sustainability data available.",
-        });
-      } catch (fallbackError) {
-        console.error("Fallback error:", fallbackError);
-      }
-    }
+    }, 0); // Defer heavy work to next event loop, badge shows instantly
   }
 }
 
@@ -1977,21 +1965,23 @@ function insertSupplyChainBadge(priceElement, scoreData) {
   // Ensure score is within range 0-5, no half points
   calculatedScore = Math.max(0, Math.min(5, Math.floor(calculatedScore)));
 
-  // Store the calculated score in scoreData
-  scoreData.score = calculatedScore;
+  // Check if this is a loading badge
+  const isLoading = scoreData.isLoading === true;
 
-  // Log detailed score calculation for badge and modal
-  console.log(
-    `Sustainability score calculation (single source):\n  - Origin Mentioned: ${originPoints} point(s)\n  - Certifications: ${certPoints} point(s)\n  - Sustainable Materials: ${materialPoints} point(s)\n  - End-of-Life: ${endOfLifePoints} point(s)\n  - Environmental Impact: ${envPoints} point(s)\n  = Total: ${calculatedScore}/5\n`
-  );
+  if (!isLoading) {
+    // Store the calculated score in scoreData
+    scoreData.score = calculatedScore;
 
-  // Use scoreData.score for both badge and modal rendering
-  // ...existing code for badge and modal rendering, using scoreData.score...
+    // Log detailed score calculation for badge and modal
+    console.log(
+      `Sustainability score calculation (single source):\n  - Origin Mentioned: ${originPoints} point(s)\n  - Certifications: ${certPoints} point(s)\n  - Sustainable Materials: ${materialPoints} point(s)\n  - End-of-Life: ${endOfLifePoints} point(s)\n  - Environmental Impact: ${envPoints} point(s)\n  = Total: ${calculatedScore}/5\n`
+    );
 
-  // Update the scoreData object with our synced score
-  scoreData.calculatedScore = calculatedScore;
-  scoreData.score = calculatedScore;
-  scoreData.icons = getRatingIcons(Math.round(calculatedScore));
+    // Update the scoreData object with our synced score
+    scoreData.calculatedScore = calculatedScore;
+    scoreData.score = calculatedScore;
+    scoreData.icons = getRatingIcons(Math.round(calculatedScore));
+  }
 
   // Store confidence data for future analysis if available
   if (scoreData.sustainabilityScoreData?.confidenceLevels) {
@@ -2023,19 +2013,32 @@ function insertSupplyChainBadge(priceElement, scoreData) {
     }
   }
 
-  // Create badge element
-  const badge = document.createElement("div");
-  badge.id = "supply-chain-badge";
-  badge.className = "supply-chain-badge";
-  badge.style.display = settings.enabled ? "flex" : "none";
+  // Check if we're updating an existing badge
+  let badge;
+  if (
+    scoreData.updateExisting &&
+    document.body.contains(scoreData.updateExisting)
+  ) {
+    badge = scoreData.updateExisting;
+  } else {
+    // Create new badge element
+    badge = document.createElement("div");
+    badge.id = scoreData.badgeId || "supply-chain-badge";
+    badge.className = "supply-chain-badge";
+    badge.style.display = settings.enabled ? "flex" : "none";
+  }
 
-  // Determine badge color based on score
-  const badgeColor = scoreData.score > 0 ? "#4caf50" : "#e53935"; // Green if > 0, red if 0
+  // Determine badge color based on score or loading state
+  const badgeColor = scoreData.isLoading
+    ? "#757575" // Gray for loading
+    : scoreData.score > 0
+    ? "#4caf50"
+    : "#e53935"; // Green if > 0, red if 0
 
   // Badge revision with enhanced information
   // Create tooltip with detailed breakdown if available
   let tooltipContent = "";
-  if (scoreData.sustainabilityScoreData) {
+  if (!scoreData.isLoading && scoreData.sustainabilityScoreData) {
     tooltipContent = `
       Origin: ${badgeOriginPoints}/1 ${
       badgeConfidenceLevels.origin > 0.7 ? "✓" : ""
@@ -2055,60 +2058,118 @@ function insertSupplyChainBadge(priceElement, scoreData) {
     `;
   }
 
-  // Choose appropriate icon based on score
-  let sustainabilityIcon = "🍃"; // Default
-  if (calculatedScore >= 4) {
-    sustainabilityIcon = "🌱"; // Excellent sustainability score
-  } else if (calculatedScore >= 2) {
-    sustainabilityIcon = "♻️"; // Moderate sustainability score
-  } else if (calculatedScore >= 1) {
-    sustainabilityIcon = "🌍"; // Low sustainability score
-  } else {
-    sustainabilityIcon = "⚠️"; // No sustainability info
-  }
-
-  badge.innerHTML = `
-    <div class="supply-chain-badge-content sleek-badge" 
-         style="background: #fff; border-radius: 18px; box-shadow: 0 2px 8px 0 rgba(60,60,60,0.10); padding: 8px 18px 8px 14px; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 120px;"
-         title="Sustainability Score: ${scoreData.score}/5${
-    tooltipContent ? "\n\n" + tooltipContent : ""
-  }">
-      <span class="supply-chain-badge-title" style="font-size: 0.95em; font-weight: 600; color: #222; letter-spacing: 0.01em; margin-bottom: 2px;">Sustainability Score</span>
-      <span style="display: flex; align-items: center; gap: 8px;">
-        <span class="supply-chain-score" style="color: ${badgeColor}; font-size: 1.15em; font-weight: 700;">
-          ${
-            scoreData.score !== null && scoreData.score !== undefined
-              ? `${scoreData.score}/5`
-              : "N/A"
-          }
+  // Content depends on whether we're showing loading state or results
+  if (scoreData.isLoading) {
+    // Loading state badge
+    badge.innerHTML = `
+      <div class="supply-chain-badge-content sleek-badge" 
+           style="background: #fff; border-radius: 18px; box-shadow: 0 2px 8px 0 rgba(60,60,60,0.10); padding: 8px 18px 8px 14px; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 120px;"
+           title="Analyzing product sustainability...">
+        <span class="supply-chain-badge-title" style="font-size: 0.95em; font-weight: 600; color: #222; letter-spacing: 0.01em; margin-bottom: 2px;">Sustainability Score</span>
+        <span style="display: flex; align-items: center; gap: 8px;">
+          <span class="supply-chain-score" style="color: ${badgeColor}; font-size: 1.15em; font-weight: 700;">
+            Analyzing...
+          </span>
+          <span class="supply-chain-spinner" style="display: inline-block; width: 16px; height: 16px; border: 3px solid #f3f3f3; border-top: 3px solid #4caf50; border-radius: 50%; animation: spin 1.2s linear infinite;"></span>
         </span>
-        <span class="supply-chain-icons" style="font-size: 1.2em; display: flex; align-items: center;">${sustainabilityIcon} ${
-    scoreData.icons
-  }</span>
-      </span>
-    </div>
-  `;
-
-  // Try to insert badge after price element
-  try {
-    if (priceElement.parentNode) {
-      priceElement.parentNode.insertBefore(badge, priceElement.nextSibling);
+      </div>
+      <style>
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+      </style>
+    `;
+  } else {
+    // Results badge
+    // Choose appropriate icon based on score
+    let sustainabilityIcon = "🍃"; // Default
+    if (calculatedScore >= 4) {
+      sustainabilityIcon = "🌱"; // Excellent sustainability score
+    } else if (calculatedScore >= 2) {
+      sustainabilityIcon = "♻️"; // Moderate sustainability score
+    } else if (calculatedScore >= 1) {
+      sustainabilityIcon = "🌍"; // Low sustainability score
     } else {
-      // Fallback: Create a fixed position badge if we can't insert it normally
-      badge.style.position = "fixed";
-      badge.style.top = "10px";
-      badge.style.right = "10px";
-      badge.style.zIndex = "9999";
-      document.body.appendChild(badge);
+      sustainabilityIcon = "⚠️"; // No sustainability info
     }
-  } catch (e) {
-    // Fallback: Create a fixed position badge
-    badge.style.position = "fixed";
-    badge.style.top = "10px";
-    badge.style.right = "10px";
-    badge.style.zIndex = "9999";
-    document.body.appendChild(badge);
+
+    badge.innerHTML = `
+      <div class="supply-chain-badge-content sleek-badge" 
+           style="background: #fff; border-radius: 18px; box-shadow: 0 2px 8px 0 rgba(60,60,60,0.10); padding: 8px 18px 8px 14px; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 120px;"
+           title="Sustainability Score: ${scoreData.score}/5${
+      tooltipContent ? "\n\n" + tooltipContent : ""
+    }">
+        <span class="supply-chain-badge-title" style="font-size: 0.95em; font-weight: 600; color: #222; letter-spacing: 0.01em; margin-bottom: 2px;">Sustainability Score</span>
+        <span style="display: flex; align-items: center; gap: 8px;">
+          <span class="supply-chain-score" style="color: ${badgeColor}; font-size: 1.15em; font-weight: 700;">
+            ${
+              scoreData.score !== null && scoreData.score !== undefined
+                ? `${scoreData.score}/5`
+                : "N/A"
+            }
+          </span>
+          <span class="supply-chain-icons" style="font-size: 1.2em; display: flex; align-items: center;">${sustainabilityIcon} ${
+      scoreData.icons
+    }</span>
+        </span>
+      </div>
+    `;
   }
+
+  // Always float badge at bottom right for maximum compatibility, and make it draggable
+  badge.style.position = "fixed";
+  badge.style.bottom = "10px";
+  badge.style.right = "10px";
+  badge.style.top = "auto";
+  badge.style.zIndex = "2147483647"; // Max z-index for compatibility
+  badge.style.cursor = "move";
+  badge.style.pointerEvents = "auto";
+  badge.style.userSelect = "none";
+  document.body.appendChild(badge);
+
+  // --- Make badge draggable ---
+  let isDragging = false;
+  let dragOffsetX = 0;
+  let dragOffsetY = 0;
+
+  badge.addEventListener("mousedown", function (e) {
+    // Only start drag if clicking the badge itself, not a child element (like a button)
+    if (e.target !== badge) return;
+    isDragging = true;
+    const rect = badge.getBoundingClientRect();
+    dragOffsetX = e.clientX - rect.left;
+    dragOffsetY = e.clientY - rect.top;
+    badge.style.transition = "none";
+    document.body.style.userSelect = "none";
+  });
+
+  document.addEventListener("mousemove", function (e) {
+    if (!isDragging) return;
+    // Calculate new position
+    let newLeft = e.clientX - dragOffsetX;
+    let newTop = e.clientY - dragOffsetY;
+    // Clamp to viewport
+    newLeft = Math.max(
+      0,
+      Math.min(window.innerWidth - badge.offsetWidth, newLeft)
+    );
+    newTop = Math.max(
+      0,
+      Math.min(window.innerHeight - badge.offsetHeight, newTop)
+    );
+    badge.style.left = newLeft + "px";
+    badge.style.top = newTop + "px";
+    badge.style.right = "auto";
+  });
+
+  document.addEventListener("mouseup", function () {
+    if (isDragging) {
+      isDragging = false;
+      badge.style.transition = "box-shadow 0.2s";
+      document.body.style.userSelect = "";
+    }
+  });
 
   // Create details popup
   const details = document.createElement("div");
@@ -2613,19 +2674,45 @@ ${
   });
 
   // Add event listeners
+
+  // Create or get backdrop for modal overlay
+  let backdrop = document.getElementById("supply-chain-backdrop");
+  if (!backdrop) {
+    backdrop = document.createElement("div");
+    backdrop.id = "supply-chain-backdrop";
+    backdrop.style.position = "fixed";
+    backdrop.style.top = "0";
+    backdrop.style.left = "0";
+    backdrop.style.width = "100vw";
+    backdrop.style.height = "100vh";
+    backdrop.style.background = "rgba(0,0,0,0.25)";
+    backdrop.style.zIndex = "2147483646";
+    backdrop.style.display = "none";
+    document.body.appendChild(backdrop);
+  }
   badge.addEventListener("click", (e) => {
     e.preventDefault();
     e.stopPropagation();
     details.style.display = "block";
-
-    // Position the details popup near the badge
-    const badgeRect = badge.getBoundingClientRect();
-    details.style.top = window.scrollY + badgeRect.bottom + 10 + "px";
-    details.style.left = window.scrollX + badgeRect.left + "px";
+    details.style.position = "fixed";
+    details.style.top = "50%";
+    details.style.left = "50%";
+    details.style.transform = "translate(-50%, -50%)";
+    details.style.zIndex = "2147483647";
+    details.style.maxWidth = "90vw";
+    details.style.maxHeight = "90vh";
+    details.style.overflowY = "auto";
+    backdrop.style.display = "block";
   });
 
   details.querySelector(".supply-chain-close").addEventListener("click", () => {
     details.style.display = "none";
+    if (backdrop) backdrop.style.display = "none";
+  });
+
+  backdrop.addEventListener("click", () => {
+    details.style.display = "none";
+    backdrop.style.display = "none";
   });
 
   details
