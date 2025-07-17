@@ -1,7 +1,638 @@
+// Helper function to truncate text to a specific number of words
+function truncateText(text, maxWords) {
+  if (!text) return "";
+  const words = text.split(" ");
+  if (words.length <= maxWords) return text;
+  return words.slice(0, maxWords).join(" ") + "...";
+}
+
+// --- Web Ethical Issue Search with Supabase Caching ---
+async function getOrFetchWebEthicalIssueScore(productTitle, productBrand) {
+  // Debug object to track all steps
+  let debugWebEthical = {
+    googleQuery: "",
+    googleApiUrl: "",
+    googleApiRequest: null,
+    googleApiResponse: null,
+    groqInput: "",
+    groqOutput: null,
+    groqScore: null,
+  };
+  // Always log debug info to the console for developer inspection
+  function logDebugWebEthical(label, dbg) {
+    try {
+      console.log(`[DEBUG][WebEthical] ${label}:`, dbg);
+    } catch (e) {}
+  }
+
+  // UI update for web ethical score in modal
+  window.updateWebEthicalScoreUI = function (score, output) {
+    // Find or create the modal section for web ethical issues
+    let modal = document.getElementById("supply-chain-details");
+    if (!modal) return;
+    let ethicalSection = modal.querySelector(".web-ethical-issue-section");
+    if (!ethicalSection) {
+      ethicalSection = document.createElement("div");
+      ethicalSection.className = "web-ethical-issue-section";
+      ethicalSection.style.margin = "12px 0";
+      ethicalSection.style.padding = "8px";
+      ethicalSection.style.background = "#f7f7f7";
+      ethicalSection.style.borderRadius = "6px";
+      ethicalSection.style.fontSize = "14px";
+      ethicalSection.innerHTML = `<b>Web Ethical/Sustainability Issue:</b> <span class='web-ethical-score'></span><br><span class='web-ethical-reason'></span>`;
+      modal.appendChild(ethicalSection);
+    }
+
+    // Format the score display
+    let scoreDisplay;
+    if (score === 1) {
+      scoreDisplay = "+1 (No Issues)";
+    } else if (score === -0.5) {
+      scoreDisplay = "-0.5 (Minor Issues)";
+    } else if (score === -1) {
+      scoreDisplay = "-1 (Major Issues)";
+    } else if (score === 0) {
+      scoreDisplay = "0 (Neutral)";
+    } else {
+      scoreDisplay = score;
+    }
+
+    ethicalSection.querySelector(
+      ".web-ethical-score"
+    ).textContent = `Score: ${scoreDisplay}`;
+
+    // Extract and display the reason
+    let reason = "No specific information available";
+    if (output && typeof output === "object" && output.reason) {
+      reason = output.reason;
+    } else if (typeof output === "string") {
+      reason = output;
+    } else if (!output) {
+      reason = "No ethical issues detected";
+    }
+
+    // Limit the reason length
+    if (reason && reason.length > 200) {
+      reason = reason.substring(0, 197) + "...";
+    }
+
+    ethicalSection.querySelector(".web-ethical-reason").textContent = reason;
+  };
+  // Normalize product key for Supabase
+  const productKey = encodeURIComponent(
+    (productTitle + " " + (productBrand || ""))
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim()
+  );
+  // 1. Try to fetch from Supabase cache (new schema fields only)
+  let supaData = null;
+  try {
+    const supaResp = await fetch(
+      `${supabaseUrl}/rest/v1/web_ethical_issues?product_key=eq.${productKey}&select=score,rawquery,rawdata,ai_analysis,created_at,id`,
+      {
+        headers: {
+          apikey: supabaseKey,
+          Authorization: `Bearer ${supabaseKey}`,
+        },
+      }
+    );
+    if (supaResp.ok) {
+      const data = await supaResp.json();
+      if (data && data.length > 0) {
+        supaData = data[0];
+        // If we have any row for this product, always use cache and do NOT initiate Google search
+        logDebugWebEthical("Supabase cache hit", supaData);
+        if (typeof window.updateWebEthicalScoreUI === "function") {
+          window.updateWebEthicalScoreUI(supaData.score, supaData.ai_analysis);
+        }
+        return {
+          score: supaData.score,
+          evidence: "", // No direct evidence field, can extract from rawdata if needed
+          searchResult: null, // Not directly available, can parse from rawdata
+          groqOutput: supaData.ai_analysis,
+          debugWebEthical: debugWebEthical,
+          created_at: supaData.created_at,
+          id: supaData.id,
+          rawquery: supaData.rawquery,
+          rawdata: supaData.rawdata,
+        };
+      }
+    }
+  } catch (e) {
+    console.warn("[WebVerify] Supabase cache fetch failed:", e);
+  }
+
+  // 2. If not cached, perform Google search
+  // Limit product title to max 8 words for the query
+  const limitedProductTitle = productTitle.split(" ").slice(0, 8).join(" ");
+  // Improved search logic: use a natural language query for issues related to the product
+  const rawQuery = `Any scandal OR lawsuit OR sustainability issue OR ethical issue related to "${limitedProductTitle}"`;
+  const query = encodeURIComponent(rawQuery);
+  debugWebEthical.googleQuery = rawQuery;
+  debugWebEthical.googleApiRequest = {
+    url: `https://www.googleapis.com/customsearch/v1?key=***&cx=***&q=${query}`,
+    rawQuery,
+  };
+  logDebugWebEthical(
+    "Sending info to Google",
+    debugWebEthical.googleApiRequest
+  );
+
+  // Check daily limit
+  const count = getAndUpdateGoogleQueryCount();
+  if (!count) {
+    console.warn("[WebVerify] Google Custom Search daily limit reached");
+    return { score: 0, evidence: "" };
+  }
+  const url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${GOOGLE_CX}&q=${query}`;
+  debugWebEthical.googleApiUrl = url;
+  let result = { score: 1, evidence: "" };
+  let searchResults = [];
+  try {
+    // Log the search URL for debugging (remove API key)
+    console.log(
+      "[DEBUG] Sending Google Search request:",
+      url.replace(/key=[^&]+/, "key=***")
+    );
+
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      console.error(
+        "[WebVerify] Google search fetch failed:",
+        resp.status,
+        resp.statusText
+      );
+
+      // Return a more helpful error response instead of throwing
+      return {
+        score: 0,
+        evidence: "",
+        reason: "Search API error: " + resp.status,
+        searchResults: [],
+        debugWebEthical,
+        groqOutput: {
+          score: 0,
+          reason: "Google search API error: " + resp.status,
+        },
+      };
+    }
+    const data = await resp.json();
+    debugWebEthical.googleApiResponse = data;
+    logDebugWebEthical("Result received from Google", data);
+    if (data.items && Array.isArray(data.items) && data.items.length > 0) {
+      // Aggregate top 3 results
+      searchResults = data.items.slice(0, 3).map((item) => ({
+        title: item.title || "",
+        snippet: item.snippet || "",
+        link: item.link || "",
+      }));
+      console.log("[DEBUG] Found search results:", searchResults.length);
+    } else {
+      console.log("[DEBUG] No search results found");
+      // Return neutral score with explanation
+      return {
+        score: 0,
+        evidence: "",
+        reason: "No relevant information found",
+        searchResults: [],
+        debugWebEthical,
+        groqOutput: {
+          score: 0,
+          reason: "No search results available for analysis",
+        },
+      };
+    }
+    // Save the Google search results to Supabase using the new schema
+    try {
+      await fetch(`${supabaseUrl}/rest/v1/web_ethical_issues`, {
+        method: "POST",
+        headers: {
+          apikey: supabaseKey,
+          Authorization: `Bearer ${supabaseKey}`,
+          "Content-Type": "application/json",
+          Prefer: "resolution=merge-duplicates",
+        },
+        body: JSON.stringify({
+          product_key: productKey,
+          rawquery: rawQuery,
+          rawdata: searchResults, // send as array, not string
+          score: 0, // must be NOT NULL, set to 0 initially
+          ai_analysis: null,
+        }),
+      });
+    } catch (e) {
+      console.warn("[WebVerify] Supabase save (search result) failed:", e);
+    }
+    // Use DeepSeek via OpenRouter for analysis
+    // Try up to 3 search results to find a relevant one
+    let groqScore = 1; // Default positive score
+    let groqOutput = { score: 1, reason: "No web ethical issues found." };
+
+    // Process search results one by one until we find a relevant one
+    if (searchResults && searchResults.length > 0) {
+      const maxResultsToCheck = Math.min(searchResults.length, 3);
+      let foundRelevant = false;
+
+      for (let i = 0; i < maxResultsToCheck && !foundRelevant; i++) {
+        // Prepare input for DeepSeek
+        const aiInput = {
+          productTitle,
+          productBrand,
+          googleResult: searchResults[i],
+        };
+        debugWebEthical.groqInput = JSON.stringify(aiInput, null, 2);
+
+        // Call DeepSeek via OpenRouter
+        try {
+          console.log(
+            `[DEBUG] Analyzing search result #${i + 1}:`,
+            searchResults[i]
+          );
+          const aiResult = await analyzeWithDeepSeekOpenRouter(aiInput);
+          logDebugWebEthical(
+            `DeepSeek AI result (search result #${i + 1})`,
+            aiResult
+          );
+
+          // If result was not filtered as irrelevant
+          if (!aiResult.filtered) {
+            // Use this result and break the loop
+            groqScore = aiResult.score;
+            groqOutput = aiResult;
+            result.evidence = searchResults[i].link || "";
+            foundRelevant = true;
+            console.log(`[DEBUG] Found relevant result #${i + 1}:`, groqOutput);
+          } else {
+            console.log(
+              `[DEBUG] Filtered as irrelevant: search result #${i + 1}`
+            );
+          }
+        } catch (e) {
+          console.error(
+            `[DEBUG] DeepSeek API error for result #${i + 1}:`,
+            e.message
+          );
+          logDebugWebEthical(`DeepSeek AI error (search result #${i + 1})`, e);
+          // Continue to the next result on error
+        }
+      }
+
+      // If all results were filtered as irrelevant or API failed, use the fallback logic below
+      if (!foundRelevant) {
+        // We'll use a fallback keyword-based analysis in the next section
+        console.log(
+          "[DEBUG] No relevant results found or all API calls failed, using keyword-based analysis"
+        );
+        groqScore = null; // Mark for fallback
+        groqOutput = null;
+      }
+    } else {
+      // No search results available
+      groqScore = 0;
+      groqOutput = {
+        score: 0,
+        reason: "No search results available for analysis.",
+      };
+    }
+
+    // FALLBACK LOGIC: Using keyword-based analysis for all cases, but especially important when API calls fail
+    console.log("[DEBUG] Running keyword-based fallback analysis");
+    const seriousNegatives = [
+      "child labor",
+      "abuse",
+      "fraud",
+      "scandal",
+      "lawsuit",
+      "unsafe",
+      "recall",
+      "unethical",
+      "violation",
+      "controversy",
+      "exploit",
+      "pollution",
+      "boycott",
+      "greenwashing",
+    ];
+    const moderateNegatives = [
+      "investigation",
+      "allegation",
+      "criticism",
+      "complaint",
+      "concern",
+      "issue",
+      "problem",
+    ];
+    let foundSerious = false;
+    let foundModerate = false;
+    for (const item of searchResults) {
+      const text = (item.title + " " + item.snippet).toLowerCase();
+      if (seriousNegatives.some((kw) => text.includes(kw))) {
+        foundSerious = true;
+        break;
+      }
+      if (moderateNegatives.some((kw) => text.includes(kw))) {
+        foundModerate = true;
+      }
+    }
+
+    // If API analysis failed or returned null, or if we found keyword matches, update the score
+    if (
+      groqScore === null ||
+      groqOutput === null ||
+      foundSerious ||
+      foundModerate
+    ) {
+      if (foundSerious) {
+        groqScore = -1;
+        groqOutput = {
+          score: -1,
+          reason: "Serious ethical issues found (keyword analysis).",
+        };
+      } else if (foundModerate) {
+        groqScore = -0.5;
+        groqOutput = {
+          score: -0.5,
+          reason: "Some ethical issues found (keyword analysis).",
+        };
+      } else {
+        groqScore = 0;
+        groqOutput = {
+          score: 0,
+          reason: "No ethical issues detected through keyword analysis.",
+        };
+      }
+    }
+    debugWebEthical.groqOutput = groqOutput;
+    // Save DeepSeek score and analysis to Supabase (update the row)
+    try {
+      await fetch(
+        `${supabaseUrl}/rest/v1/web_ethical_issues?product_key=eq.${productKey}`,
+        {
+          method: "PATCH",
+          headers: {
+            apikey: supabaseKey,
+            Authorization: `Bearer ${supabaseKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            score: groqScore,
+            ai_analysis: groqOutput, // send as object, not string
+          }),
+        }
+      );
+    } catch (e) {
+      console.warn("[WebVerify] Supabase save (Groq) failed:", e);
+    }
+    logDebugWebEthical("DeepSeek result input", debugWebEthical.groqInput);
+    logDebugWebEthical("DeepSeek Output", groqOutput);
+    logDebugWebEthical("Debug Info", debugWebEthical);
+    result = { score: groqScore, evidence: searchResults[0]?.link || "" };
+  } catch (err) {
+    console.error("[WebVerify] Google search or analysis error:", err);
+    // Provide a more informative error message and neutral score
+    result = {
+      score: 0,
+      evidence: "",
+      reason:
+        "Analysis temporarily unavailable: " + (err.message || "Unknown error"),
+    };
+    // Update groqOutput to include the error information
+    groqOutput = {
+      score: 0,
+      reason:
+        "Analysis temporarily unavailable: " + (err.message || "Unknown error"),
+    };
+    debugWebEthical.groqOutput = groqOutput;
+    logDebugWebEthical("Debug Info (error)", debugWebEthical);
+  }
+  // Return the result (score/evidence) and the top search results for UI/debug
+  // Ensure we're returning the reason directly for easier access
+  // Ensure we have a valid groqOutput
+  if (!groqOutput) {
+    groqOutput = {
+      score: result.score || 0,
+      reason: "Analysis could not determine specific issues",
+    };
+  }
+
+  const returnData = {
+    score: result.score,
+    evidence: result.evidence,
+    reason:
+      groqOutput && groqOutput.reason
+        ? groqOutput.reason
+        : "No specific reason available",
+    searchResults,
+    debugWebEthical,
+    groqOutput, // Include the groqOutput object with reason for the modal
+  };
+
+  // Log what we're returning
+  console.log(
+    "[DEBUG] Returning from getOrFetchWebEthicalIssueScore:",
+    returnData
+  );
+
+  return returnData;
+}
+
+// --- Google Custom Search JSON API integration for web verification ---
+const GOOGLE_API_KEY = "AIzaSyA5hCTwdOksJirqbKuvQlFuG0tkRNmsfxE";
+const GOOGLE_CX = "24b8704bf73e7459f"; // <-- Replace with your CSE ID
+const GOOGLE_DAILY_LIMIT = 100;
+
+// Add test to check if analyzeWithDeepSeekOpenRouter is defined
+console.log(
+  "[DEBUG] DeepSeek function check:",
+  typeof analyzeWithDeepSeekOpenRouter
+);
+
+// Helper to get today's date string (YYYY-MM-DD)
+function getTodayString() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+// Helper to get and update daily query count
+function getAndUpdateGoogleQueryCount() {
+  let data = {};
+  try {
+    const raw = safeStorage.getItem("google_query_count");
+    if (raw) data = JSON.parse(raw);
+  } catch (e) {}
+  const today = getTodayString();
+  if (!data[today]) data[today] = 0;
+  if (data[today] < GOOGLE_DAILY_LIMIT) {
+    data[today]++;
+    safeStorage.setItem("google_query_count", JSON.stringify(data));
+    return data[today];
+  } else {
+    return null; // Limit reached
+  }
+}
+
+// Perform a Google Custom Search for product verification
+async function getWebVerifiedScoreGoogle(productTitle, productBrand, claims) {
+  // Check daily limit
+  const count = getAndUpdateGoogleQueryCount();
+  if (!count) {
+    console.warn("[WebVerify] Google Custom Search daily limit reached");
+    return null;
+  }
+  // Build query
+  const query = encodeURIComponent(
+    `${productTitle} ${productBrand} sustainability certification ${
+      claims || ""
+    }`
+  );
+  const url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${GOOGLE_CX}&q=${query}`;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error("Google search failed");
+    const data = await resp.json();
+    // Simple scoring: count trusted domains/certifications in results
+    let score = 0;
+    const trustedDomains = [
+      "fsc.org",
+      "fairtrade.net",
+      "global-standard.org",
+      "oeko-tex.com",
+      "usda.gov",
+      "rainforest-alliance.org",
+      "bcorporation.net",
+      "energystar.gov",
+      "eu-ecolabel.de",
+    ];
+    if (data.items && Array.isArray(data.items)) {
+      for (const item of data.items) {
+        if (
+          trustedDomains.some((domain) => (item.link || "").includes(domain))
+        ) {
+          score += 25; // Each trusted hit gives 25%
+        }
+      }
+    }
+    return Math.min(score, 100); // Cap at 100%
+  } catch (err) {
+    console.error("[WebVerify] Google search error:", err);
+    return null;
+  }
+}
 // Helper to check if current site is an allowed e-commerce domain
 function isEcommerceSite() {
   const host = window.location.hostname.toLowerCase();
   return ecommerceDomains.some((domain) => host.includes(domain));
+}
+
+// Analyze Google search result with DeepSeek via OpenRouter (global function)
+async function analyzeWithDeepSeekOpenRouter(input) {
+  // Use your OpenRouter API key and DeepSeek model
+  const OPENROUTER_API_KEY =
+    "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";
+  const DEEPSEEK_MODEL = "Deepseek/deepseek-chat-v3-0324:free";
+
+  // Filter out irrelevant search results first
+  const isRelevant = (result) => {
+    const lowerTitle = result.title.toLowerCase();
+    const lowerSnippet = result.snippet.toLowerCase();
+    const lowerBrand = input.productBrand.toLowerCase();
+    const lowerProduct = input.productTitle.toLowerCase();
+    return (
+      lowerTitle.includes(lowerBrand) ||
+      lowerSnippet.includes(lowerBrand) ||
+      lowerTitle.includes(lowerProduct) ||
+      lowerSnippet.includes(lowerProduct)
+    );
+  };
+
+  if (!isRelevant(input.googleResult)) {
+    return {
+      score: 0,
+      reason: "Search result is not relevant to this product.",
+      filtered: true,
+    };
+  }
+
+  // Compose a focused prompt for web ethical/sustainability issues
+  const prompt = `You are an expert in sustainability and ethics. Analyze the following Google search result for a product and determine if there are any web ethical or sustainability issues.\nRespond ONLY with a single JSON object, no explanation, no markdown, no extra text.\nIf there are no issues, respond with { "score": 1, "reason": "No web ethical issues found." }\nIf there are some moderate issues, respond with { "score": -0.5, "reason": "Some ethical issues found because [specific reason]" }\nIf there are serious issues, respond with { "score": -1, "reason": "Serious ethical issues found because [specific reason]" }\nBase your answer only on the provided search result. Be concise but specific about the reason.`;
+  const userContent = `Product Title: ${input.productTitle}\nBrand: ${input.productBrand}\nGoogle Search Result:\nTitle: ${input.googleResult.title}\nSnippet: ${input.googleResult.snippet}\nLink: ${input.googleResult.link}`;
+  const body = {
+    model: DEEPSEEK_MODEL,
+    messages: [
+      { role: "system", content: prompt },
+      { role: "user", content: userContent },
+    ],
+    temperature: 0.2,
+    max_tokens: 256,
+  };
+
+  let response;
+  try {
+    response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        "HTTP-Referer": "https://sustainability-index.com",
+        "X-Title": "Sustainability Index Extension",
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    return {
+      score: 0,
+      reason: "AI analysis unavailable (network error).",
+      error: err.message,
+    };
+  }
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    return {
+      score: 0,
+      reason: `AI analysis unavailable (${response.status}). Using neutral score.`,
+      error: errorText,
+    };
+  }
+
+  const result = await response.json();
+  const content = result.choices[0].message.content;
+  console.log("[DEBUG] DeepSeek raw response:", content);
+
+  // Try to extract JSON from the response robustly
+  try {
+    // Remove markdown code block if present
+    let cleaned = content.trim();
+    if (cleaned.startsWith("```json")) {
+      cleaned = cleaned
+        .replace(/^```json/, "")
+        .replace(/```$/, "")
+        .trim();
+    } else if (cleaned.startsWith("```")) {
+      cleaned = cleaned.replace(/^```/, "").replace(/```$/, "").trim();
+    }
+    // Try to find the first JSON object in the string
+    let jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    let jsonStr = jsonMatch ? jsonMatch[0] : cleaned;
+    const parsedJson = JSON.parse(jsonStr);
+
+    // Ensure the response has the expected format
+    if (typeof parsedJson.score !== "number") {
+      return {
+        score: 0,
+        reason: parsedJson.reason || "Invalid score in response",
+        raw: content,
+      };
+    }
+    return parsedJson;
+  } catch (e) {
+    // Fallback: show the raw content for debugging
+    return {
+      score: 0,
+      reason: "Failed to parse AI response: " + e.message,
+      raw: content,
+    };
+  }
 }
 // --- Safe localStorage patch for sandboxed frames ---
 (function patchLocalStorage() {
@@ -56,87 +687,99 @@ async function fetchEcommerceDomains() {
 async function calculateSustainabilityScore(productText) {
   // Initialize the scoring object with confidence scores
   const sustainabilityScore = {
-    originMentioned: {
-      score: 0,
-      evidence: "",
-      confidence: 0,
-    },
-    certifications: {
-      score: 0,
-      evidence: "",
-      confidence: 0,
-    },
-    sustainableMaterials: {
-      score: 0,
-      evidence: "",
-      confidence: 0,
-    },
-    endOfLife: {
-      score: 0,
-      evidence: "",
-      confidence: 0,
-    },
-    environmentalImpact: {
-      score: 0,
-      evidence: "",
-      confidence: 0,
-    },
+    originMentioned: { score: 0, evidence: "", confidence: 0 },
+    certifications: { score: 0, evidence: "", confidence: 0 },
+    sustainableMaterials: { score: 0, evidence: "", confidence: 0 },
+    webEthicalIssue: { score: 0, evidence: "", reason: "" },
+    environmentalImpact: { score: 0, evidence: "", confidence: 0 },
     totalScore: 0,
     totalConfidence: 0,
-    version: "2.0", // Updated version with AI integration
+    version: "2.1", // Updated version with web ethical issue
   };
 
   // Try to analyze with AI first
+  let aiScore = null;
+  let webEthical = null;
+  let productTitle = window.detectedProductTitle || "";
+  let productBrand = window.detectedProductBrand || "";
   try {
     console.log("[DEBUG] Analyzing product with Groq AI...");
-    const aiScore = await analyzeWithGroqAI(productText);
-
+    aiScore = await analyzeWithGroqAI(productText);
     if (aiScore) {
       console.log("[DEBUG] Using AI analysis for sustainability scoring");
-
       // Set scores from AI analysis
       sustainabilityScore.originMentioned.score = aiScore.origin.score;
       sustainabilityScore.originMentioned.evidence = aiScore.origin.evidence;
       sustainabilityScore.originMentioned.confidence = 0.9;
-
       sustainabilityScore.certifications.score = aiScore.certifications.score;
       sustainabilityScore.certifications.evidence =
         aiScore.certifications.evidence;
       sustainabilityScore.certifications.confidence = 0.9;
-
       sustainabilityScore.sustainableMaterials.score = aiScore.materials.score;
       sustainabilityScore.sustainableMaterials.evidence =
         aiScore.materials.evidence;
       sustainabilityScore.sustainableMaterials.confidence = 0.9;
-
-      sustainabilityScore.endOfLife.score = aiScore.endOfLife.score;
-      sustainabilityScore.endOfLife.evidence = aiScore.endOfLife.evidence;
-      sustainabilityScore.endOfLife.confidence = 0.9;
-
       sustainabilityScore.environmentalImpact.score =
         aiScore.environmentalImpact.score;
       sustainabilityScore.environmentalImpact.evidence =
         aiScore.environmentalImpact.evidence;
       sustainabilityScore.environmentalImpact.confidence = 0.9;
+      // Web ethical issue: use web search (with Supabase cache)
+      webEthical = await getOrFetchWebEthicalIssueScore(
+        productTitle,
+        productBrand
+      );
+      sustainabilityScore.webEthicalIssue.score = webEthical.score;
+      sustainabilityScore.webEthicalIssue.evidence = webEthical.evidence;
 
+      // Debug logging for web ethical issue data
+      console.log("[DEBUG] Web Ethical Issue raw data:", webEthical);
+
+      // Set the reason with fallbacks
+      if (webEthical.groqOutput && webEthical.groqOutput.reason) {
+        sustainabilityScore.webEthicalIssue.reason =
+          webEthical.groqOutput.reason;
+        console.log(
+          "[DEBUG] Using groqOutput.reason:",
+          sustainabilityScore.webEthicalIssue.reason
+        );
+      } else if (typeof webEthical.reason === "string") {
+        sustainabilityScore.webEthicalIssue.reason = webEthical.reason;
+        console.log(
+          "[DEBUG] Using webEthical.reason:",
+          sustainabilityScore.webEthicalIssue.reason
+        );
+      } else {
+        sustainabilityScore.webEthicalIssue.reason =
+          webEthical.score < 0
+            ? "Ethical issues detected"
+            : "No ethical issues detected";
+        console.log(
+          "[DEBUG] Using fallback reason:",
+          sustainabilityScore.webEthicalIssue.reason
+        );
+      }
+
+      // Update modal UI with web ethical score
+      if (typeof window.updateWebEthicalScoreUI === "function") {
+        window.updateWebEthicalScoreUI(webEthical.score, webEthical.groqOutput);
+      }
       // If AI detected a manufacturing country
       if (aiScore.manufacturingCountry) {
         window.detectedCountry = aiScore.manufacturingCountry;
         console.log("[DEBUG] AI detected country:", window.detectedCountry);
       }
-
-      // Calculate total score
-      // Only add End-of-Life point if sustainable end-of-life options detected
-      const endOfLifePoint = sustainabilityScore.endOfLife.score === 1 ? 1 : 0;
-      sustainabilityScore.totalScore =
+      // Calculate total score (no end-of-life)
+      // Make sure web ethical issues are properly applied (they can be negative)
+      sustainabilityScore.totalScore = Math.max(
+        0,
         sustainabilityScore.originMentioned.score +
-        sustainabilityScore.certifications.score +
-        sustainabilityScore.sustainableMaterials.score +
-        endOfLifePoint +
-        sustainabilityScore.environmentalImpact.score;
-
+          sustainabilityScore.certifications.score +
+          sustainabilityScore.sustainableMaterials.score +
+          sustainabilityScore.webEthicalIssue.score +
+          sustainabilityScore.environmentalImpact.score
+      );
       sustainabilityScore.totalConfidence = 0.9;
-
       return sustainabilityScore;
     }
   } catch (aiError) {
@@ -144,6 +787,18 @@ async function calculateSustainabilityScore(productText) {
       "[DEBUG] AI analysis failed, falling back to rule-based:",
       aiError
     );
+  }
+  // Always run web ethical issue search, even if AI fails
+  webEthical = await getOrFetchWebEthicalIssueScore(productTitle, productBrand);
+  sustainabilityScore.webEthicalIssue.score = webEthical.score;
+  sustainabilityScore.webEthicalIssue.evidence = webEthical.evidence;
+  sustainabilityScore.webEthicalIssue.reason =
+    webEthical.groqOutput && webEthical.groqOutput.reason
+      ? webEthical.groqOutput.reason
+      : "";
+  // Update modal UI with web ethical score
+  if (typeof window.updateWebEthicalScoreUI === "function") {
+    window.updateWebEthicalScoreUI(webEthical.score, webEthical.groqOutput);
   }
 
   // If AI fails or isn't available, fall back to the original rule-based approach
@@ -538,176 +1193,6 @@ async function calculateSustainabilityScore(productText) {
     );
   }
 
-  // Check for end-of-life information with context validation
-  // Categorize end-of-life options with confidence levels
-  const endOfLifeOptions = [
-    {
-      category: "recyclability",
-      patterns: [
-        { regex: /\b(?:100%|fully)\s+recyclable\b/i, confidence: 0.95 },
-        {
-          regex: /\brecyclable\s+(?:materials|packaging|components|product)\b/i,
-          confidence: 0.9,
-        },
-        {
-          regex: /\bproduct\s*(?:can|may)\s*be\s*recycled\b/i,
-          confidence: 0.85,
-        },
-        {
-          regex: /\b(?:made|designed)\s*to\s*be\s*recycled\b/i,
-          confidence: 0.9,
-        },
-      ],
-    },
-    {
-      category: "biodegradability",
-      patterns: [
-        { regex: /\b(?:100%|fully)\s+biodegradable\b/i, confidence: 0.95 },
-        {
-          regex:
-            /\bbiodegradable\s+(?:materials|packaging|components|product)\b/i,
-          confidence: 0.9,
-        },
-        { regex: /\b(?:100%|fully)\s+compostable\b/i, confidence: 0.95 },
-        {
-          regex:
-            /\bcompostable\s+(?:materials|packaging|components|product)\b/i,
-          confidence: 0.9,
-        },
-      ],
-    },
-    {
-      category: "takeback_programs",
-      patterns: [
-        {
-          regex: /\btake[\-\s]back\s*(?:program|initiative|scheme)\b/i,
-          confidence: 0.95,
-        },
-        {
-          regex:
-            /\breturn\s*(?:program|policy|scheme)\s*for\s*(?:recycling|disposal)\b/i,
-          confidence: 0.9,
-        },
-        { regex: /\bend-of-life\s*(?:collection|return)\b/i, confidence: 0.9 },
-        {
-          regex: /\bproduct\s*(?:recycling|collection)\s*program\b/i,
-          confidence: 0.85,
-        },
-      ],
-    },
-    {
-      category: "circular_design",
-      patterns: [
-        {
-          regex: /\bcircular\s*(?:design|economy|product)\b/i,
-          confidence: 0.9,
-        },
-        {
-          regex: /\b(?:made|designed)\s*to\s*be\s*reused\b/i,
-          confidence: 0.85,
-        },
-        { regex: /\bdisassembly\s*instructions\b/i, confidence: 0.9 },
-        { regex: /\b(?:easy|simple)\s*to\s*repair\b/i, confidence: 0.85 },
-        { regex: /\brepairability\b/i, confidence: 0.9 },
-      ],
-    },
-    {
-      category: "disposal_guidance",
-      patterns: [
-        { regex: /\bdisposal\s*instructions\b/i, confidence: 0.8 },
-        {
-          regex: /\bend-of-life\s*(?:instructions|guidance)\b/i,
-          confidence: 0.85,
-        },
-        {
-          regex: /\bhow\s*to\s*(?:dispose|recycle)\s*this\s*product\b/i,
-          confidence: 0.8,
-        },
-      ],
-    },
-  ];
-
-  try {
-    let foundEndOfLifeOptions = [];
-    let eolHighestConfidence = 0;
-    let bestEolEvidence = "";
-    let eolCategories = new Set();
-
-    // Check for context phrases that would increase confidence
-    const eolContext = [
-      /end.?of.?life/i,
-      /disposal/i,
-      /recycling\s+(?:information|instructions)/i,
-      /how\s+to\s+dispose/i,
-      /product\s+(?:lifecycle|life\s+cycle)/i,
-    ];
-
-    const hasEolContext = eolContext.some((regex) => regex.test(productText));
-    const contextBoost = hasEolContext ? 0.1 : 0;
-
-    // Find end-of-life mentions in the text
-    for (const eolOption of endOfLifeOptions) {
-      for (const { regex, confidence } of eolOption.patterns) {
-        const matches = productText.match(
-          new RegExp(
-            `((?:[\\s\\w,.]{0,30})${regex.source}(?:[\\s\\w,.]{0,30}))`,
-            "gi"
-          )
-        );
-
-        if (matches && matches.length) {
-          for (const match of matches) {
-            // Check for negative contexts
-            const isNegativeContext =
-              /not\s+(?:\w+\s+){0,3}(?:recyclable|biodegradable|compostable)|cannot\s+(?:\w+\s+){0,3}(?:be recycled|be composted)/i.test(
-                match
-              );
-
-            if (!isNegativeContext) {
-              const adjustedConfidence = Math.min(
-                confidence + contextBoost,
-                1.0
-              );
-
-              foundEndOfLifeOptions.push({
-                category: eolOption.category,
-                evidence: match,
-                confidence: adjustedConfidence,
-              });
-
-              eolCategories.add(eolOption.category);
-
-              if (adjustedConfidence > eolHighestConfidence) {
-                eolHighestConfidence = adjustedConfidence;
-                bestEolEvidence = match;
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // Set score if we found any end-of-life options
-    if (foundEndOfLifeOptions.length > 0) {
-      sustainabilityScore.endOfLife.score = 1; // Binary scoring for now
-      sustainabilityScore.endOfLife.evidence = bestEolEvidence;
-      sustainabilityScore.endOfLife.confidence = eolHighestConfidence;
-      sustainabilityScore.endOfLife.categories = Array.from(eolCategories);
-
-      console.log(
-        "[SUSTAINABILITY] End-of-life options found:",
-        Array.from(eolCategories).join(", "),
-        "with highest confidence:",
-        eolHighestConfidence
-      );
-    }
-  } catch (error) {
-    console.error(
-      "[SUSTAINABILITY] Error detecting end-of-life options:",
-      error
-    );
-  }
-
   // Check for environmental impact disclosure with context validation
   // Categorize environmental impact measures with confidence levels
   const environmentalImpactCategories = [
@@ -1004,6 +1489,187 @@ function updateUI() {
 // Update the detectProductPage function to better handle Amazon product pages
 async function detectProductPage() {
   // ...existing code...
+
+  // --- Debug Button for Manual Google API & Supabase Save ---
+  // Only add once per page
+  if (!document.getElementById("supply-chain-debug-btn")) {
+    const debugBtn = document.createElement("button");
+    debugBtn.id = "supply-chain-debug-btn";
+    debugBtn.textContent = "DEBUG: Google API & Save";
+    debugBtn.style.position = "fixed";
+    debugBtn.style.bottom = "20px";
+    debugBtn.style.right = "20px";
+    debugBtn.style.zIndex = 99999;
+    debugBtn.style.background = "#222";
+    debugBtn.style.color = "#fff";
+    debugBtn.style.padding = "8px 16px";
+    debugBtn.style.borderRadius = "6px";
+    debugBtn.style.border = "none";
+    debugBtn.style.cursor = "pointer";
+    debugBtn.style.boxShadow = "0 2px 8px rgba(0,0,0,0.2)";
+    debugBtn.onclick = async function () {
+      const productTitle = window.detectedProductTitle || document.title || "";
+      const productBrand = window.detectedProductBrand || "";
+      alert(
+        "Running Google API and saving to Supabase for: " +
+          productTitle +
+          " / " +
+          productBrand
+      );
+      // Run Google API logic with updated search and aggregation (same as main logic)
+      let productType = productTitle;
+      if (
+        productBrand &&
+        productTitle.toLowerCase().includes(productBrand.toLowerCase())
+      ) {
+        productType = productTitle
+          .replace(new RegExp(productBrand, "i"), "")
+          .trim();
+      }
+      // Use only the first 2 words of productType
+      const shortType = productType.split(" ").slice(0, 2).join(" ");
+      // Use 4 focused issue keywords (same as getOrFetchWebEthicalIssueScore)
+      const issueKeywords = [
+        "scandal",
+        "lawsuit",
+        "sustainability issue",
+        "ethical issue",
+      ];
+      const rawQuery = `${productBrand} ${shortType} (${issueKeywords.join(
+        " OR "
+      )})`;
+      const query = encodeURIComponent(rawQuery);
+      const url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${GOOGLE_CX}&q=${query}`;
+      let result = { score: 1, evidence: "" };
+      let searchResults = [];
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error("Google search failed: " + resp.status);
+        const data = await resp.json();
+        // Debug log: full Google API response
+        console.log("[DEBUG][WebEthical] Google API response:", data);
+        const negativeKeywords = [
+          "scandal",
+          "lawsuit",
+          "child labor",
+          "pollution",
+          "boycott",
+          "unsafe",
+          "recall",
+          "unethical",
+          "violation",
+          "controversy",
+          "exploit",
+          "abuse",
+          "fraud",
+          "greenwashing",
+        ];
+        if (data.items && Array.isArray(data.items) && data.items.length > 0) {
+          // Aggregate top 3 results
+          searchResults = data.items.slice(0, 3).map((item) => ({
+            title: item.title,
+            snippet: item.snippet,
+            link: item.link,
+          }));
+          // Scan all for negative keywords
+          let foundNegative = false;
+          for (const item of searchResults) {
+            const text = (item.title + " " + item.snippet).toLowerCase();
+            if (negativeKeywords.some((kw) => text.includes(kw))) {
+              result = { score: -1, evidence: item.link };
+              foundNegative = true;
+              break;
+            }
+          }
+          if (!foundNegative) {
+            result = { score: 0, evidence: searchResults[0].link };
+          }
+        } else {
+          // No results found
+          alert(
+            "[DEBUG] No Google search results found. Nothing will be saved to Supabase."
+          );
+          return;
+        }
+        // Save the top 3 search results to Supabase (for Groq analysis)
+        const productKey = encodeURIComponent(
+          (productTitle + " " + (productBrand || ""))
+            .toLowerCase()
+            .replace(/\s+/g, " ")
+            .trim()
+        );
+        const supaSaveResp = await fetch(
+          `${supabaseUrl}/rest/v1/web_ethical_issues`,
+          {
+            method: "POST",
+            headers: {
+              apikey: supabaseKey,
+              Authorization: `Bearer ${supabaseKey}`,
+              "Content-Type": "application/json",
+              Prefer: "resolution=merge-duplicates",
+            },
+            body: JSON.stringify({
+              product_key: productKey,
+              search_result_title: searchResults[0]
+                ? searchResults[0].title
+                : null,
+              search_result_snippet: searchResults[0]
+                ? searchResults[0].snippet
+                : null,
+              search_result_link: searchResults[0]
+                ? searchResults[0].link
+                : null,
+              search_result_title_2: searchResults[1]
+                ? searchResults[1].title
+                : null,
+              search_result_snippet_2: searchResults[1]
+                ? searchResults[1].snippet
+                : null,
+              search_result_link_2: searchResults[1]
+                ? searchResults[1].link
+                : null,
+              search_result_title_3: searchResults[2]
+                ? searchResults[2].title
+                : null,
+              search_result_snippet_3: searchResults[2]
+                ? searchResults[2].snippet
+                : null,
+              search_result_link_3: searchResults[2]
+                ? searchResults[2].link
+                : null,
+              score: 0, // Always provide a default score to satisfy NOT NULL constraint
+              // Do not set groq_score/output yet
+            }),
+          }
+        );
+        if (!supaSaveResp.ok) {
+          const errText = await supaSaveResp.text();
+          alert(
+            "[DEBUG] Supabase save failed: " +
+              supaSaveResp.status +
+              " " +
+              supaSaveResp.statusText +
+              "\n" +
+              errText
+          );
+        } else {
+          alert(
+            "[DEBUG] Supabase save success!\n" +
+              JSON.stringify(
+                {
+                  searchResults,
+                },
+                null,
+                2
+              )
+          );
+        }
+      } catch (err) {
+        alert("[DEBUG] Google API or Supabase error: " + err);
+      }
+    };
+    document.body.appendChild(debugBtn);
+  }
   // ...existing code...
   // More comprehensive selectors for product pages
   const priceSelectors = [
@@ -1231,6 +1897,61 @@ async function detectProductPage() {
       explanation: "Analyzing product sustainability...",
     });
 
+    // --- Extract product info immediately for web ethical search ---
+    // Use detected product title and brand
+    const productTitle =
+      (titleElement ? titleElement.textContent.trim() : "") ||
+      document.title ||
+      "Product";
+    let productBrand = "";
+    const brandSelectors = [
+      ".brand",
+      ".product-brand",
+      '[itemprop="brand"]',
+      "[data-brand]",
+      ".a-brand",
+      "#bylineInfo",
+      ".brand-name",
+      ".productMeta-brand",
+      ".product-meta__vendor",
+      ".product-vendor",
+      ".manufacturer",
+      '[data-testid="brand-name"]',
+      '[data-test="brand-name"]',
+    ];
+    for (const selector of brandSelectors) {
+      const el = document.querySelector(selector);
+      if (el && el.textContent.trim().length > 0) {
+        productBrand = el.textContent.trim();
+        break;
+      }
+    }
+    // Fallback: try meta tag
+    if (!productBrand) {
+      const metaBrand = document.querySelector(
+        'meta[name="brand"], meta[property="og:brand"]'
+      );
+      if (metaBrand && metaBrand.content) {
+        productBrand = metaBrand.content.trim();
+      }
+    }
+    // Set globals for downstream use
+    window.detectedProductTitle = productTitle;
+    window.detectedProductBrand = productBrand;
+
+    // We'll store all async analysis promises here
+    const analysisPromises = {
+      webEthical: null,
+      aiScore: null,
+    };
+
+    // Start web ethical analysis immediately (doesn't block UI)
+    analysisPromises.webEthical = getOrFetchWebEthicalIssueScore(
+      productTitle,
+      productBrand
+    );
+    // --- End initial product info extraction ---
+
     // Defer all heavy DOM work and AI calls
     setTimeout(async () => {
       try {
@@ -1255,45 +1976,9 @@ async function detectProductPage() {
           priceElement = titleElement || document.body;
         }
 
-        // Extract product title
-        const productTitle =
-          (titleElement ? titleElement.textContent.trim() : "") ||
-          document.title ||
-          "Product";
-
-        // Try to extract brand name from common selectors or meta tags
-        let productBrand = "";
-        const brandSelectors = [
-          ".brand",
-          ".product-brand",
-          '[itemprop="brand"]',
-          "[data-brand]",
-          ".a-brand",
-          "#bylineInfo",
-          ".brand-name",
-          ".productMeta-brand",
-          ".product-meta__vendor",
-          ".product-vendor",
-          ".manufacturer",
-          '[data-testid="brand-name"]',
-          '[data-test="brand-name"]',
-        ];
-        for (const selector of brandSelectors) {
-          const el = document.querySelector(selector);
-          if (el && el.textContent.trim().length > 0) {
-            productBrand = el.textContent.trim();
-            break;
-          }
-        }
-        // Fallback: try meta tag
-        if (!productBrand) {
-          const metaBrand = document.querySelector(
-            'meta[name="brand"], meta[property="og:brand"]'
-          );
-          if (metaBrand && metaBrand.content) {
-            productBrand = metaBrand.content.trim();
-          }
-        }
+        // We're using the product info we already extracted earlier
+        const productTitle = window.detectedProductTitle;
+        const productBrand = window.detectedProductBrand;
 
         // Extract comprehensive product description and details - more thorough product info gathering
         let productDescription = "";
@@ -1459,88 +2144,154 @@ ${sustainabilityClaims}
           manufacturingCountry
         );
 
-        // Now perform the Groq AI analysis asynchronously
+        // Now perform the Groq AI analysis and wait for both promises
         console.log(
           "[DEBUG][Groq] Sending to Groq for material analysis:",
           enhancedDescription
         );
 
-        // Run analysis in the background
-        setTimeout(async function runBackgroundAnalysis() {
-          let aiScore = null;
-          try {
-            aiScore = await Promise.race([
-              analyzeWithGroqAI(enhancedDescription),
-              new Promise((_, reject) =>
-                setTimeout(() => reject(new Error("AI timeout")), 8000)
-              ),
-            ]);
-          } catch (err) {
-            console.warn("[Groq AI] Timed out or failed:", err);
-          }
+        // Start Groq AI analysis
+        analysisPromises.aiScore = Promise.race([
+          analyzeWithGroqAI(enhancedDescription),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("AI timeout")), 8000)
+          ),
+        ]);
 
+        // Run combined analysis in the background
+        setTimeout(async function runBackgroundAnalysis() {
           // Find the existing badge
           const existingBadge = document.getElementById(initialBadgeId);
 
-          if (aiScore) {
-            console.log(
-              "[DEBUG][Groq] Received from Groq for material analysis:",
-              aiScore
-            );
-            // Compose scoreData using Groq AI results
-            let envImpactLevel = "unable";
-            if (
-              aiScore.environmentalImpact &&
-              typeof aiScore.environmentalImpact.score === "number"
-            ) {
-              if (aiScore.environmentalImpact.score === 1) {
-                envImpactLevel = "low";
-              } else if (aiScore.environmentalImpact.score === -1) {
-                envImpactLevel = "high";
-              } else if (aiScore.environmentalImpact.score === 0.5) {
-                envImpactLevel = "medium";
-              } else {
-                envImpactLevel = "unable";
+          try {
+            // Wait for both web ethical and AI analysis to complete
+            const [webEthical, aiScore] = await Promise.allSettled([
+              analysisPromises.webEthical,
+              analysisPromises.aiScore,
+            ]);
+
+            // Handle web ethical result (handle failed promise case)
+            const webEthicalResult =
+              webEthical.status === "fulfilled"
+                ? webEthical.value
+                : {
+                    score: 0,
+                    evidence: "",
+                    groqOutput: { reason: "Analysis failed" },
+                  };
+
+            // Handle AI score result (handle failed promise case)
+            const aiScoreResult =
+              aiScore.status === "fulfilled" ? aiScore.value : null;
+
+            console.log("[DEBUG] Web ethical result:", webEthicalResult);
+            console.log("[DEBUG] AI score result:", aiScoreResult);
+
+            // Update the modal with web ethical score
+            if (typeof window.updateWebEthicalScoreUI === "function") {
+              window.updateWebEthicalScoreUI(
+                webEthicalResult.score,
+                webEthicalResult.groqOutput
+              );
+            }
+
+            if (aiScoreResult) {
+              console.log(
+                "[DEBUG][Groq] Received from Groq for material analysis:",
+                aiScoreResult
+              );
+              // Compose scoreData using Groq AI results
+              let envImpactLevel = "unable";
+              if (
+                aiScoreResult.environmentalImpact &&
+                typeof aiScoreResult.environmentalImpact.score === "number"
+              ) {
+                if (aiScoreResult.environmentalImpact.score === 1) {
+                  envImpactLevel = "low";
+                } else if (aiScoreResult.environmentalImpact.score === -1) {
+                  envImpactLevel = "high";
+                } else if (aiScoreResult.environmentalImpact.score === 0.5) {
+                  envImpactLevel = "medium";
+                } else {
+                  envImpactLevel = "unable";
+                }
               }
+              const sustainableMaterialsScore =
+                aiScoreResult.materials &&
+                typeof aiScoreResult.materials.score === "number"
+                  ? aiScoreResult.materials.score
+                  : 0;
+              let endOfLifeScore =
+                aiScoreResult.endOfLife &&
+                typeof aiScoreResult.endOfLife.score === "number"
+                  ? aiScoreResult.endOfLife.score
+                  : 0;
+              if (sustainableMaterialsScore === 1 && endOfLifeScore !== 1) {
+                endOfLifeScore = 1;
+              }
+
+              // Include web ethical score and evidence in the badge data
+              const scoreData = {
+                manufacturingCountry: manufacturingCountry, // Only use regex result
+                sustainableMaterials: sustainableMaterialsScore,
+                endOfLife: endOfLifeScore,
+                certifications:
+                  sustainableMaterialsScore === 1
+                    ? aiScoreResult.certifications &&
+                      typeof aiScoreResult.certifications.score === "number"
+                      ? aiScoreResult.certifications.score
+                      : 0
+                    : 0,
+                environmentalImpact: envImpactLevel,
+                // Add web ethical score to the badge data
+                webEthicalIssue: {
+                  score: webEthicalResult.score,
+                  evidence: webEthicalResult.evidence,
+                  reason: webEthicalResult.groqOutput?.reason || "",
+                },
+                explanation: enhancedDescription,
+                updateExisting: existingBadge,
+                isLoading: false,
+              };
+
+              console.log(
+                "[DEBUG] Full product description for scoring:",
+                enhancedDescription.substring(0, 500) + "..."
+              );
+              console.log(
+                "[DEBUG] Groq AI sustainable materials score:",
+                scoreData.sustainableMaterials
+              );
+              console.log(
+                "[DEBUG] Web ethical score included in badge:",
+                scoreData.webEthicalIssue
+              );
+
+              // Insert badge with BOTH web ethical and AI scores
+              insertSupplyChainBadge(priceElement, scoreData);
+            } else {
+              // Fallback badge if AI fails but include web ethical score if available
+              insertSupplyChainBadge(priceElement, {
+                score: null,
+                verifiedScore: null,
+                manufacturingCountry: manufacturingCountry,
+                co2Emissions: null,
+                shippingMethod: null,
+                webEthicalIssue: {
+                  score: webEthicalResult.score,
+                  evidence: webEthicalResult.evidence,
+                  reason: webEthicalResult.groqOutput?.reason || "",
+                },
+                icons: "",
+                updateExisting: existingBadge,
+                isLoading: false,
+                explanation:
+                  "Sustainability data partially available (AI analysis failed).",
+              });
             }
-            const sustainableMaterialsScore =
-              aiScore.materials && typeof aiScore.materials.score === "number"
-                ? aiScore.materials.score
-                : 0;
-            let endOfLifeScore =
-              aiScore.endOfLife && typeof aiScore.endOfLife.score === "number"
-                ? aiScore.endOfLife.score
-                : 0;
-            if (sustainableMaterialsScore === 1 && endOfLifeScore !== 1) {
-              endOfLifeScore = 1;
-            }
-            const scoreData = {
-              manufacturingCountry: manufacturingCountry, // Only use regex result
-              sustainableMaterials: sustainableMaterialsScore,
-              endOfLife: endOfLifeScore,
-              certifications:
-                sustainableMaterialsScore === 1
-                  ? aiScore.certifications &&
-                    typeof aiScore.certifications.score === "number"
-                    ? aiScore.certifications.score
-                    : 0
-                  : 0,
-              environmentalImpact: envImpactLevel,
-              explanation: enhancedDescription,
-              updateExisting: existingBadge,
-              // Add other fields as needed from aiScore
-            };
-            console.log(
-              "[DEBUG] Full product description for scoring:",
-              enhancedDescription.substring(0, 500) + "..."
-            );
-            console.log(
-              "[DEBUG] Groq AI sustainable materials score:",
-              scoreData.sustainableMaterials
-            );
-            insertSupplyChainBadge(priceElement, scoreData);
-          } else {
-            // Fallback badge if AI fails or times out
+          } catch (err) {
+            console.warn("[Analysis] Failed to complete analysis:", err);
+            // Fallback badge if both analyses fail
             insertSupplyChainBadge(priceElement, {
               score: null,
               verifiedScore: null,
@@ -1549,8 +2300,9 @@ ${sustainabilityClaims}
               shippingMethod: null,
               icons: "",
               updateExisting: existingBadge,
+              isLoading: false,
               explanation:
-                "Sustainability data not available (AI timeout or error).",
+                "Sustainability data not available (analysis failed).",
             });
           }
         }, 100); // Small delay to ensure the loading badge is shown first
@@ -1959,8 +2711,17 @@ function insertSupplyChainBadge(priceElement, scoreData) {
   }
 
   // Calculate total score (0-5)
-  var calculatedScore =
-    originPoints + certPoints + materialPoints + endOfLifePoints + envPoints;
+  var webEthicalPoints =
+    typeof scoreData.webEthicalIssue === "object" &&
+    typeof scoreData.webEthicalIssue.score === "number"
+      ? scoreData.webEthicalIssue.score
+      : 0;
+
+  // Ensure total score is never negative by using Math.max(0, ...)
+  var calculatedScore = Math.max(
+    0,
+    originPoints + certPoints + materialPoints + webEthicalPoints + envPoints
+  );
 
   // Ensure score is within range 0-5, no half points
   calculatedScore = Math.max(0, Math.min(5, Math.floor(calculatedScore)));
@@ -1974,7 +2735,7 @@ function insertSupplyChainBadge(priceElement, scoreData) {
 
     // Log detailed score calculation for badge and modal
     console.log(
-      `Sustainability score calculation (single source):\n  - Origin Mentioned: ${originPoints} point(s)\n  - Certifications: ${certPoints} point(s)\n  - Sustainable Materials: ${materialPoints} point(s)\n  - End-of-Life: ${endOfLifePoints} point(s)\n  - Environmental Impact: ${envPoints} point(s)\n  = Total: ${calculatedScore}/5\n`
+      `Sustainability score calculation (single source):\n  - Origin Mentioned: ${originPoints} point(s)\n  - Certifications: ${certPoints} point(s)\n  - Sustainable Materials: ${materialPoints} point(s)\n  - Web Ethical Issues: ${webEthicalPoints} point(s)\n  - End-of-Life: ${endOfLifePoints} point(s)\n  - Environmental Impact: ${envPoints} point(s)\n  = Total: ${calculatedScore}/5\n`
     );
 
     // Update the scoreData object with our synced score
@@ -2254,10 +3015,66 @@ function insertSupplyChainBadge(priceElement, scoreData) {
     sustainableMaterialsText = "Sustainable materials detected";
   }
 
-  let endOfLifeText = "No end-of-life information found";
-  if (scoreData.endOfLife === 1) {
-    endOfLifeText = "Sustainable end-of-life options detected";
+  // --- Web Ethical Issue Modal Section ---
+  let webEthicalText = "No web ethical issues found.";
+  let webEthicalEvidence = "";
+  let webEthicalReason = "";
+  if (scoreData.webEthicalIssue) {
+    // Log web ethical issue data for debugging
+    console.log("[DEBUG] Web Ethical Issue data:", scoreData.webEthicalIssue);
+
+    // Set the reason from DeepSeek if available
+    if (scoreData.webEthicalIssue.reason) {
+      webEthicalReason = scoreData.webEthicalIssue.reason;
+      console.log("[DEBUG] Web Ethical Reason:", webEthicalReason);
+    } else if (
+      scoreData.webEthicalIssue.groqOutput &&
+      scoreData.webEthicalIssue.groqOutput.reason
+    ) {
+      webEthicalReason = scoreData.webEthicalIssue.groqOutput.reason;
+      console.log(
+        "[DEBUG] Web Ethical Reason from groqOutput:",
+        webEthicalReason
+      );
+    }
+
+    if (scoreData.webEthicalIssue.score === -1) {
+      webEthicalText = "Serious ethical or sustainability issues found.";
+    } else if (scoreData.webEthicalIssue.score === -0.5) {
+      webEthicalText = "Some moderate ethical or sustainability issues found.";
+    } else if (scoreData.webEthicalIssue.score === 0) {
+      webEthicalText = "Neutral or unclear web sustainability/ethical info.";
+    } else if (scoreData.webEthicalIssue.score === 1) {
+      webEthicalText = "No web ethical or sustainability issues found.";
+    }
+    if (scoreData.webEthicalIssue.evidence) {
+      webEthicalEvidence = `<a href='${scoreData.webEthicalIssue.evidence}' target='_blank' rel='noopener noreferrer'>See evidence</a>`;
+    }
+    // Debug section for Web Ethical/Sustainability Issue
+    if (scoreData.webEthicalIssue.debugWebEthical) {
+      const dbg = scoreData.webEthicalIssue.debugWebEthical;
+      webEthicalText += `<br><details style='margin-top:8px;'><summary style='cursor:pointer;font-weight:bold;'>Debug Web Ethical/Sustainability Issue</summary><div style='font-size:0.95em;max-width:600px;overflow-x:auto;'><b>Google Query:</b> <code>${
+        dbg.googleQuery
+      }</code><br><b>Google API URL:</b> <code style='word-break:break-all;'>${
+        dbg.googleApiUrl
+      }</code><br><b>Google API Response (truncated):</b> <pre style='max-height:120px;overflow:auto;background:#f5f5f5;border:1px solid #ccc;'>${JSON.stringify(
+        dbg.googleApiResponse,
+        null,
+        2
+      ).slice(0, 800)}${
+        JSON.stringify(dbg.googleApiResponse, null, 2).length > 800
+          ? "... (truncated)"
+          : ""
+      }</pre><b>DeepSeek Input:</b> <pre style='max-height:120px;overflow:auto;background:#f5f5f5;border:1px solid #ccc;'>${
+        dbg.groqInput
+      }</pre><b>DeepSeek Output:</b> <pre style='max-height:120px;overflow:auto;background:#f5f5f5;border:1px solid #ccc;'>${JSON.stringify(
+        dbg.groqOutput,
+        null,
+        2
+      )}</pre></div></details>`;
+    }
   }
+
   details.innerHTML = `
     <div class="supply-chain-header">
       <h3>Sustainability Index: <br> <br> <span style="color: ${badgeColor}">${
@@ -2281,9 +3098,6 @@ function insertSupplyChainBadge(priceElement, scoreData) {
           </li>
           <li><b>Sustainable Materials</b> (${materialPoints} point):
             <span>${sustainableMaterialsText}</span>
-          </li>
-          <li><b>End-of-Life</b> (${scoreData.endOfLife} point):
-            <span>${endOfLifeText}</span>
           </li>
           <li><b>Environmental Impact</b> (${envPoints} point):
             <span>
@@ -2309,8 +3123,45 @@ function insertSupplyChainBadge(priceElement, scoreData) {
               }
             </span>
           </li>
+          <li><b>Web Ethical/Sustainability Issue</b> (${
+            typeof scoreData.webEthicalIssue === "object"
+              ? scoreData.webEthicalIssue.score
+              : 0
+          } point):
+            <span>${webEthicalText} ${
+    webEthicalEvidence ? "| " + webEthicalEvidence : ""
+  }${
+    webEthicalReason
+      ? `<br><small style="color: #666; font-style: italic;">"${truncateText(
+          webEthicalReason,
+          15
+        )}"</small>`
+      : webEthicalText.includes("issues found")
+      ? `<br><small style="color: #666; font-style: italic;">"Analysis completed"</small>`
+      : ""
+  }</span>
+          </li>
         </ul>
       </div>
+      
+      <!-- Web Ethical Issue Dedicated Section (shows AI analysis) -->
+      ${
+        scoreData.webEthicalIssue
+          ? `<div class="web-ethical-issue-section" style="margin: 12px 0; padding: 8px; background: #f7f7f7; border-radius: 6px; font-size: 14px;">
+        <b>Web Ethical/Sustainability Issue:</b> <span class="web-ethical-score">Score: ${
+          scoreData.webEthicalIssue.score
+        }</span><br>
+        <span class="web-ethical-reason">${
+          scoreData.webEthicalIssue.reason ||
+          (webEthicalReason
+            ? webEthicalReason
+            : scoreData.webEthicalIssue.score === 0
+            ? "Analysis completed, no specific issues found"
+            : "Analysis completed")
+        }</span>
+      </div>`
+          : ""
+      }
       ${
         isHighEmission
           ? `<div class="warning-banner">⚠️ High carbon footprint detected</div>`
@@ -2322,15 +3173,7 @@ function insertSupplyChainBadge(priceElement, scoreData) {
           : ""
       }
     </div>
-    <div class="supply-chain-verified-score">
-      <h4 style="font-size:1.2em;font-weight:bold; margin:0;">Web Verified Score${
-        scoreData.productBrand ? ` (${scoreData.productBrand})` : ""
-      }: ${
-    scoreData.verifiedScore !== undefined && scoreData.verifiedScore !== null
-      ? scoreData.verifiedScore + "%"
-      : "N/A"
-  }</h4><br/>
-    </div>
+   
     <div class="supply-chain-metrics">
       <div class="supply-chain-metric">
         <h4>Transparency Level</h4>
