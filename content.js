@@ -554,7 +554,7 @@ async function analyzeWithDeepSeekOpenRouter(input) {
   }
 
   // Compose a focused prompt for web ethical/sustainability issues
-  const prompt = `You are an expert in sustainability and ethics. Analyze the following Google search result for a product and determine if there are any web ethical or sustainability issues.\nRespond ONLY with a single JSON object, no explanation, no markdown, no extra text.\nIf there are no issues, respond with { "score": 1, "reason": "No web ethical issues found." }\nIf there are some moderate issues, respond with { "score": -0.5, "reason": "Some ethical issues found because [specific reason]" }\nIf there are serious issues, respond with { "score": -1, "reason": "Serious ethical issues found because [specific reason]" }\nBase your answer only on the provided search result. Be concise but specific about the reason.`;
+  const prompt = `You are an expert in sustainability and ethics. Analyze the following Google search result for a product and determine if there are any web ethical or sustainability issues.\n\nRespond ONLY with a single valid JSON object, no explanation, no markdown, no extra text, no code block.\n\nIf there are no issues, respond with: { "score": 1, "reason": "No web ethical issues found." }\nIf there are some moderate issues, respond with: { "score": -0.5, "reason": "Some ethical issues found because [specific reason]" }\nIf there are serious issues, respond with: { "score": -1, "reason": "Serious ethical issues found because [specific reason]" }\n\nBase your answer only on the provided search result. Be concise but specific about the reason. Do NOT include any explanation, markdown, or code block formatting.`;
   const userContent = `Product Title: ${input.productTitle}\nBrand: ${input.productBrand}\nGoogle Search Result:\nTitle: ${input.googleResult.title}\nSnippet: ${input.googleResult.snippet}\nLink: ${input.googleResult.link}`;
   const body = {
     model: DEEPSEEK_MODEL,
@@ -601,7 +601,7 @@ async function analyzeWithDeepSeekOpenRouter(input) {
 
   // Try to extract JSON from the response robustly
   try {
-    // Remove markdown code block if present
+    // Remove markdown/code block if present
     let cleaned = content.trim();
     if (cleaned.startsWith("```json")) {
       cleaned = cleaned
@@ -617,7 +617,11 @@ async function analyzeWithDeepSeekOpenRouter(input) {
     const parsedJson = JSON.parse(jsonStr);
 
     // Ensure the response has the expected format
-    if (typeof parsedJson.score !== "number") {
+    if (
+      typeof parsedJson.score !== "number" ||
+      typeof parsedJson.reason !== "string"
+    ) {
+      console.warn("[DeepSeek] Invalid JSON format:", parsedJson);
       return {
         score: 0,
         reason: parsedJson.reason || "Invalid score in response",
@@ -626,6 +630,7 @@ async function analyzeWithDeepSeekOpenRouter(input) {
     }
     return parsedJson;
   } catch (e) {
+    console.error("[DeepSeek] Failed to parse AI response:", e, content);
     // Fallback: show the raw content for debugging
     return {
       score: 0,
@@ -1490,186 +1495,7 @@ function updateUI() {
 async function detectProductPage() {
   // ...existing code...
 
-  // --- Debug Button for Manual Google API & Supabase Save ---
-  // Only add once per page
-  if (!document.getElementById("supply-chain-debug-btn")) {
-    const debugBtn = document.createElement("button");
-    debugBtn.id = "supply-chain-debug-btn";
-    debugBtn.textContent = "DEBUG: Google API & Save";
-    debugBtn.style.position = "fixed";
-    debugBtn.style.bottom = "20px";
-    debugBtn.style.right = "20px";
-    debugBtn.style.zIndex = 99999;
-    debugBtn.style.background = "#222";
-    debugBtn.style.color = "#fff";
-    debugBtn.style.padding = "8px 16px";
-    debugBtn.style.borderRadius = "6px";
-    debugBtn.style.border = "none";
-    debugBtn.style.cursor = "pointer";
-    debugBtn.style.boxShadow = "0 2px 8px rgba(0,0,0,0.2)";
-    debugBtn.onclick = async function () {
-      const productTitle = window.detectedProductTitle || document.title || "";
-      const productBrand = window.detectedProductBrand || "";
-      alert(
-        "Running Google API and saving to Supabase for: " +
-          productTitle +
-          " / " +
-          productBrand
-      );
-      // Run Google API logic with updated search and aggregation (same as main logic)
-      let productType = productTitle;
-      if (
-        productBrand &&
-        productTitle.toLowerCase().includes(productBrand.toLowerCase())
-      ) {
-        productType = productTitle
-          .replace(new RegExp(productBrand, "i"), "")
-          .trim();
-      }
-      // Use only the first 2 words of productType
-      const shortType = productType.split(" ").slice(0, 2).join(" ");
-      // Use 4 focused issue keywords (same as getOrFetchWebEthicalIssueScore)
-      const issueKeywords = [
-        "scandal",
-        "lawsuit",
-        "sustainability issue",
-        "ethical issue",
-      ];
-      const rawQuery = `${productBrand} ${shortType} (${issueKeywords.join(
-        " OR "
-      )})`;
-      const query = encodeURIComponent(rawQuery);
-      const url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${GOOGLE_CX}&q=${query}`;
-      let result = { score: 1, evidence: "" };
-      let searchResults = [];
-      try {
-        const resp = await fetch(url);
-        if (!resp.ok) throw new Error("Google search failed: " + resp.status);
-        const data = await resp.json();
-        // Debug log: full Google API response
-        console.log("[DEBUG][WebEthical] Google API response:", data);
-        const negativeKeywords = [
-          "scandal",
-          "lawsuit",
-          "child labor",
-          "pollution",
-          "boycott",
-          "unsafe",
-          "recall",
-          "unethical",
-          "violation",
-          "controversy",
-          "exploit",
-          "abuse",
-          "fraud",
-          "greenwashing",
-        ];
-        if (data.items && Array.isArray(data.items) && data.items.length > 0) {
-          // Aggregate top 3 results
-          searchResults = data.items.slice(0, 3).map((item) => ({
-            title: item.title,
-            snippet: item.snippet,
-            link: item.link,
-          }));
-          // Scan all for negative keywords
-          let foundNegative = false;
-          for (const item of searchResults) {
-            const text = (item.title + " " + item.snippet).toLowerCase();
-            if (negativeKeywords.some((kw) => text.includes(kw))) {
-              result = { score: -1, evidence: item.link };
-              foundNegative = true;
-              break;
-            }
-          }
-          if (!foundNegative) {
-            result = { score: 0, evidence: searchResults[0].link };
-          }
-        } else {
-          // No results found
-          alert(
-            "[DEBUG] No Google search results found. Nothing will be saved to Supabase."
-          );
-          return;
-        }
-        // Save the top 3 search results to Supabase (for Groq analysis)
-        const productKey = encodeURIComponent(
-          (productTitle + " " + (productBrand || ""))
-            .toLowerCase()
-            .replace(/\s+/g, " ")
-            .trim()
-        );
-        const supaSaveResp = await fetch(
-          `${supabaseUrl}/rest/v1/web_ethical_issues`,
-          {
-            method: "POST",
-            headers: {
-              apikey: supabaseKey,
-              Authorization: `Bearer ${supabaseKey}`,
-              "Content-Type": "application/json",
-              Prefer: "resolution=merge-duplicates",
-            },
-            body: JSON.stringify({
-              product_key: productKey,
-              search_result_title: searchResults[0]
-                ? searchResults[0].title
-                : null,
-              search_result_snippet: searchResults[0]
-                ? searchResults[0].snippet
-                : null,
-              search_result_link: searchResults[0]
-                ? searchResults[0].link
-                : null,
-              search_result_title_2: searchResults[1]
-                ? searchResults[1].title
-                : null,
-              search_result_snippet_2: searchResults[1]
-                ? searchResults[1].snippet
-                : null,
-              search_result_link_2: searchResults[1]
-                ? searchResults[1].link
-                : null,
-              search_result_title_3: searchResults[2]
-                ? searchResults[2].title
-                : null,
-              search_result_snippet_3: searchResults[2]
-                ? searchResults[2].snippet
-                : null,
-              search_result_link_3: searchResults[2]
-                ? searchResults[2].link
-                : null,
-              score: 0, // Always provide a default score to satisfy NOT NULL constraint
-              // Do not set groq_score/output yet
-            }),
-          }
-        );
-        if (!supaSaveResp.ok) {
-          const errText = await supaSaveResp.text();
-          alert(
-            "[DEBUG] Supabase save failed: " +
-              supaSaveResp.status +
-              " " +
-              supaSaveResp.statusText +
-              "\n" +
-              errText
-          );
-        } else {
-          alert(
-            "[DEBUG] Supabase save success!\n" +
-              JSON.stringify(
-                {
-                  searchResults,
-                },
-                null,
-                2
-              )
-          );
-        }
-      } catch (err) {
-        alert("[DEBUG] Google API or Supabase error: " + err);
-      }
-    };
-    document.body.appendChild(debugBtn);
-  }
+  // ...existing code...
   // ...existing code...
   // More comprehensive selectors for product pages
   const priceSelectors = [
@@ -2887,7 +2713,10 @@ function insertSupplyChainBadge(priceElement, scoreData) {
   badge.style.cursor = "move";
   badge.style.pointerEvents = "auto";
   badge.style.userSelect = "none";
-  document.body.appendChild(badge);
+  // Only append badge if not already in DOM
+  if (!document.body.contains(badge)) {
+    document.body.appendChild(badge);
+  }
 
   // --- Make badge draggable ---
   let isDragging = false;
@@ -3495,8 +3324,10 @@ ${
 
   `;
 
-  // Add details to page
-  document.body.appendChild(details);
+  // Only append details/modal if not already in DOM
+  if (!document.body.contains(details)) {
+    document.body.appendChild(details);
+  }
 
   // Add event listeners for delivery option radio buttons
   const deliveryOptions = badge.querySelectorAll(
